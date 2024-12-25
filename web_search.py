@@ -3,7 +3,7 @@ from typing import Sequence
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.base import TaskResult
 from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
-from autogen_agentchat.messages import AgentEvent, ChatMessage
+from autogen_agentchat.messages import ChatMessage # AgentEvent ??
 from autogen_agentchat.teams import SelectorGroupChat
 from autogen_agentchat.ui import Console
 #from autogen_ext.models.openai import OpenAIChatCompletionClient
@@ -113,12 +113,12 @@ async def main() -> None:
     task = "Who was the Miami Heat player with the highest points in the 2006-2007 season, and what was the percentage change in his total rebounds between the 2007-2008 and 2008-2009 seasons?"
 
     # Use asyncio.run(...) if you are running this in a script.
-    # await Console(team.run_stream(task=task))
-    async for stream in team.run_stream(task=task):
-        if isinstance(stream, TaskResult):
-            print(f"Stop reason: { stream.stop_reason }")
-        else:
-            print(stream)
+    await Console(team.run_stream(task=task))
+    # async for stream in team.run_stream(task=task):
+    #     if isinstance(stream, TaskResult):
+    #         print(f"Stop reason: { stream.stop_reason }")
+    #     else:
+    #         print(stream)
 
 
 asyncio.run(main())

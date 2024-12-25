@@ -8,6 +8,7 @@ from autogen_agentchat.teams import SelectorGroupChat
 from autogen_agentchat.ui import Console
 #from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
+from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 
 from select_group_chat import CustomGroupChat
 
@@ -95,6 +96,11 @@ async def main() -> None:
         You make only one search call at a time.
         Once you have the results, you never do calculations based on them.
         """,
+    )
+
+    web_search_agent = MultimodalWebSurfer(
+        name="WebSearchAgent",
+        model_client=model_client,
     )
 
     data_analyst_agent = AssistantAgent(

@@ -67,6 +67,8 @@ def google_search(query: str, num_results: int = 2, max_chars: int = 500) -> lis
 
     Returns:
         list: A list of dictionaries containing the title, link, snippet, and body content of the search results.
+
+    src: https://microsoft.github.io/autogen/dev/user-guide/agentchat-user-guide/examples/company-research.html#defining-tools
     """
     import os
     import time

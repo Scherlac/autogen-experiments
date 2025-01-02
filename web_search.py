@@ -163,7 +163,6 @@ async def main() -> None:
 
         Your team members are:
             Web search agent: Searches for information
-            Data analyst: Performs calculations
 
         Manage **plan** to accomplish the task.
         Manage the list of **required information** and the **results**.
@@ -175,6 +174,8 @@ async def main() -> None:
         After all tasks are complete, summarize the findings and end with "TERMINATE".
         """,
     )
+
+            # Data analyst: Performs calculations
 
     web_search_agent = AssistantAgent(
         "WebSearchAgent",
@@ -210,20 +211,20 @@ async def main() -> None:
     )
 
 
-    data_analyst_agent = AssistantAgent(
-        "DataAnalystAgent",
-        description="A data analyst agent. Useful for performing calculations.",
-        model_client=model_client,
-        tools=[percentage_change_tool],
-        system_message="""
-        You are a data analyst.
-        Given the tasks you have been assigned, you should analyze the data and provide results using the tools provided.
-        """,
-    )
+    # data_analyst_agent = AssistantAgent(
+    #     "DataAnalystAgent",
+    #     description="A data analyst agent. Useful for performing calculations.",
+    #     model_client=model_client,
+    #     tools=[percentage_change_tool],
+    #     system_message="""
+    #     You are a data analyst.
+    #     Given the tasks you have been assigned, you should analyze the data and provide results using the tools provided.
+    #     """,
+    # )
 
 
     text_mention_termination = TextMentionTermination("TERMINATE")
-    max_messages_termination = MaxMessageTermination(max_messages=25)
+    max_messages_termination = MaxMessageTermination(max_messages=300)
     # Security risk: The above termination condition is not secure.
     # It will terminate the conversation if the text "TERMINATE" is mentioned.
     termination = text_mention_termination | max_messages_termination
@@ -231,12 +232,37 @@ async def main() -> None:
 
     # task = "Who was the Miami Heat player with the highest points in the 2006-2007 season, and what was the percentage change in his total rebounds between the 2007-2008 and 2008-2009 seasons?"
     # task = "Who was the F1 winner in the 2022, and what is the percentage change his championship for first and second placement in 2025 based on his points in 2022 and 2023 seasons?"
-    task = "Find the 5 best pancake recipe from 2022 to 2024. What are the differences in the ingredients."
+    # task = "Find the 5 best pancake recipe from 2022 to 2024. What are the differences in the ingredients."
+    task = """Find a CLI tool or python library that is able to create
+        lossless semantic trees from local source code files.
+        Do some research on site:github.com and provide results with a
+        code snippet. 
+        The tool/library should support the manipulation of the semantic tree
+        and replace a function with another function and update the original
+        source code. 
+        The following programming languages should be supported:
+        Python, JavaScript, TypeScript, C#, PowerShell.
+
+        The code snipet should build the semantic tree find a function with
+        a specific name and replace/update it with another function in a local
+        source code folder.
+
+        The code snippet should be PowerShell, Python. The code snippet should be
+        correct, tested and the results should be provided. 
+
+        Take multiple iterations to complete the task and provide detailed results.
+
+        In case additional evaluation would be needed to complete the task,
+        please create detailed recommendation on follow up topics and required
+        tools and experiments.
+
+
+        """
     team = None
 
     if not os.path.exists('wsearch01.txt'):
         team = SelectorGroupChat(
-            [planning_agent, web_search_agent, data_analyst_agent],
+            [planning_agent, web_search_agent], #, data_analyst_agent],
             model_client=model_client,
             termination_condition=termination,
         )
@@ -264,7 +290,7 @@ async def main() -> None:
             await team.reset()
 
         team = SelectorGroupChat(
-            [planning_agent, web_search_agent, data_analyst_agent],
+            [planning_agent, web_search_agent], #, data_analyst_agent],
             model_client=model_client,
             termination_condition=termination,
             selector_func=selector_func,
@@ -289,7 +315,7 @@ async def main() -> None:
             await team.reset()
 
         team = CustomGroupChat(
-            [planning_agent, web_search_agent, data_analyst_agent],
+            [planning_agent, web_search_agent], #, data_analyst_agent],
             model_client=model_client,
             termination_condition=termination,
             allow_repeated_speaker=True,

@@ -27,7 +27,9 @@ import tempfile
 
 from autogen_ext.code_executors.docker import DockerCommandLineCodeExecutor
 
-
+# load .env file
+from dotenv import load_dotenv
+load_dotenv()
 
 @dataclass
 class Message:
@@ -42,11 +44,19 @@ class Assistant(RoutedAgent):
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content="""
-                Write Python script in markdown block, and it will be executed. 
-                Add the filename as a comment in the first line of the code block.
-                Always save figures to file in the current directory. Do not use plt.show(). 
-                All code required to complete this task must be contained within a single response.
+                Output shell command to read script files or to verify the existence of a file.
+                Output python script to complete the task.
+                Use existing python script as a starting point if requested.
+                Use markdown block for shell commands and python scripts.
+                The first line of the code block is as follows: '# filename: <filename>'.
+                Work sequentially step by step through the task.
+                Always provide only a single output for each step.
+                Always save figures to file in the current directory. Do not use plt.show().
                 """,
+                # All code required to complete this task must be contained within a single response.
+                # Use the 'coding_agent' conda environment.
+                # Use the `conda run -n coding_agent` command to run the script or instal pip packages.
+
             )
         ]
 
@@ -128,7 +138,7 @@ async def main() -> None:
             # Start the runtime and publish a message to the assistant.
             runtime.start()
             await runtime.publish_message(
-                Message("Create a plot of NVIDA vs TSLA stock returns YTD from 2024-01-01."), DefaultTopicId()
+                Message("Create a script that is avle to modify the 'stock_returns_plot.py' file. Use the RedBaron library to interact with the python file."), DefaultTopicId()
             )
             await runtime.stop_when_idle()
 

@@ -44,7 +44,7 @@ class Message:
     content: str
 
 @dataclass
-class Assingment:
+class UserAssingment:
     content: str
 
 @dataclass
@@ -65,7 +65,7 @@ class SearchResults:
 
 @dataclass
 class Task:
-    task: str
+    content: str
 
 @dataclass
 class TaskResults:
@@ -148,12 +148,21 @@ class PlanerAgent(RoutedAgent):
         ]
 
     @message_handler
-    async def handle_message(self, message: Assingment, ctx: MessageContext) -> None:
+    async def handle_message(self, message: UserAssingment, ctx: MessageContext) -> None:
         self._chat_history.append(UserMessage(content=message.content, source="user"))
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlanner:\n{result.content}")
+        print(f"\n{'-'*80}\nPlanner:\n{result.content}", flush=True)
         self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
         await self.publish_message(Task(content=result.content), DefaultTopicId())
+
+    @message_handler
+    async def handle_taskresult(self, message: TaskResults, ctx: MessageContext) -> None:
+        self._chat_history.append(AssistantMessage(content=message.results, source="assistant"))
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nPlanner:\n{result.content}", flush=True)
+        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
+        await self.publish_message(Task(content=result.content), DefaultTopicId())
+
 
 
 @default_subscription
@@ -189,18 +198,18 @@ class Assistant(RoutedAgent):
         self._tool_agent = AgentId(tool_agent_type, f"Tool Agent - {self.id.key}")
 
     @message_handler
-    async def handle_message(self, message: Task, ctx: MessageContext) -> None:
-        self._chat_history.append(UserMessage(content=message.task, source="user"))
+    async def handle_task(self, message: Task, ctx: MessageContext) -> None:
+        self._chat_history.append(UserMessage(content=message.content, source="user"))
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nAssistant:\n{result.content}")
+        print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
         self._chat_history.append(AssistantMessage(content=result.content, source="assistant"))
         await self.send_message(CommandMessage(command=result.content), self._tool_agent)
 
     @message_handler
-    async def handle_message(self, message: CommandResponse, ctx: MessageContext) -> None:
+    async def handle_commandresponse(self, message: CommandResponse, ctx: MessageContext) -> None:
         self._chat_history.append(AssistantMessage(content=message.output, source="executor"))
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nAssistant:\n{result.content}")
+        print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
         if "SUCCESS" in result.content or "FAILURE" in result.content:
             await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
 
@@ -229,13 +238,13 @@ class Executor(RoutedAgent):
         self._code_executor = code_executor
 
     @message_handler
-    async def handle_message(self, message: CommandMessage, ctx: MessageContext) -> None:
+    async def handle_commandmessaga(self, message: CommandMessage, ctx: MessageContext) -> None:
         code_blocks = extract_markdown_code_blocks(message.command)
         if code_blocks:
             result = await self._code_executor.execute_code_blocks(
                 code_blocks, cancellation_token=ctx.cancellation_token
             )
-            print(f"\n{'-'*80}\nExecutor:\n{result.output}")
+            print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
             await self.publish_message(CommandResponse(output=result.output), DefaultTopicId())
 
 
@@ -273,7 +282,7 @@ def google_search(query: str, num_results: int = 2, max_chars: int = 500) -> lis
     response = requests.get(url, params=params)
 
     if response.status_code // 100 != 2:
-        print(response.json())
+        print(response.json(), flush=True)
         raise Exception(f"Error in API request: {response.status_code}")
 
     results = response.json().get("items", [])
@@ -314,7 +323,7 @@ def google_search(query: str, num_results: int = 2, max_chars: int = 500) -> lis
             return content
 
         except Exception as e:
-            print(f"Error fetching {url}: {str(e)}")
+            print(f"Error fetching {url}: {str(e)}", flush=True)
             return ""
 
     enriched_results = []
@@ -441,7 +450,7 @@ async def main() -> None:
             ),
         )
 
-        await PlanerAgent.register(
+        planer_agent = await PlanerAgent.register(
             runtime,
             "planner",
             lambda: PlanerAgent(
@@ -456,7 +465,11 @@ async def main() -> None:
             # Start the runtime and publish a message to the assistant.
             runtime.start()
             await runtime.publish_message(
-                Message("Create a script that is able to modify the 'stock_returns_plot.py' file. Use the RedBaron library to interact with the python file."), DefaultTopicId()
+                UserAssingment("""
+                    Create a script that is able to modify the 'stock_returns_plot.py' file. 
+                    Use the RedBaron library to interact with the python file.
+                            """), 
+                DefaultTopicId()
             )
             await runtime.stop_when_idle()
 

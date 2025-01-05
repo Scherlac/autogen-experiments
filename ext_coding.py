@@ -56,7 +56,7 @@ class Message:
     content: str
 
 @dataclass
-class UserAssingment:
+class UserAssignment:
     content: str
 
 @dataclass
@@ -76,11 +76,11 @@ class SearchResults:
     results: str
 
 @dataclass
-class Assigment:
+class Assignment:
     content: str
 
 @dataclass
-class AssigmentResults:
+class AssignmentResults:
     results: str
 
 @dataclass
@@ -110,13 +110,12 @@ class PlanerAgent(RoutedAgent):
                 You are a planning agent.
                 The job is to break down complex tasks into smaller tasks.
                 User might give you incorrect information, verify it if needed.
-                You only plan the tasks and assign them to the correct agents.
-                Do not execute the tasks yourself. Do not write code to complete the tasks.
 
+""" f"""
                 Your team members are:
-                    Search agent (id: {search_agent_type.type}): Searches for information on internet.
-                    Assisten agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
-
+                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local linux environment.
+                    Search agent (id: {search_agent_type.type}): Searches for programming manuals on the internet.
+""" """
                 Manage **plan** to accomplish the task as follows:
                 ```python
                 # filename: plan.py
@@ -134,7 +133,7 @@ class PlanerAgent(RoutedAgent):
                 # filename: collection.py
                 collection = {
                     "<topic name>": {
-                        "<sub topic name>": { # Only add sub topic for veryfied information
+                        "<sub topic name>": { # Only add sub topic for verified information
                             "description": "<description>",
                             "usage": "<usage>", # Optional, only add for scripts if information is available
                             "file_name": "<file name>", # Optional, only add for scripts if information is available
@@ -147,7 +146,7 @@ class PlanerAgent(RoutedAgent):
                 ```
 
                 Manage the **tasks** and **prioritize** them based on the plan.
-                Assign the next tasks useing the following format:
+                Assign the next tasks using the following format:
                 'TASK: <agent_id>, <task_id>, <task_description>'
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
@@ -157,6 +156,8 @@ class PlanerAgent(RoutedAgent):
                 # All code required to complete this task must be contained within a single response.
                 # Use the 'coding_agent' conda environment.
                 # Use the `conda run -n coding_agent` command to run the script or instal pip packages.
+                # You only plan the tasks and assign them to the correct agents.
+                # Do not execute the tasks yourself. Do not write code to complete the tasks.
 
             )
         ]
@@ -164,7 +165,7 @@ class PlanerAgent(RoutedAgent):
 
 
     @message_handler
-    async def handle_message(self, message: UserAssingment, ctx: MessageContext) -> None:
+    async def handle_message(self, message: UserAssignment, ctx: MessageContext) -> None:
         print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
         self._chat_history.append(UserMessage(content=message.content, source="user"))
 
@@ -204,18 +205,22 @@ class TaskHandlerAgent(RoutedAgent):
         self._model_client = model_client
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
-                content="""
+                content = """
                 You are a task handler agent.
-                Planer agent will provide you detailes about the plan, collected information and tasks.
-                Your job is to process the tasks and assign them to the correct agents.
-
+                Planer agent will provide you details about the main objective, collected information, the plan.
+                Planer agent will prepare ideas of multiple tasks as follows:
+                'TASK: <agent_id>, <task_id>, <task_description>'
+""" f"""
                 You have two team members:
                     Search agent (id: {search_agent_type.type}): Searches for information on internet.
-                    Assisten agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
+                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
+""" """
+                Your job is to prepare a single task and assign to the correct agents.
+                Provide context and details based on chat history.
+                Output a single task you intend to assign as follows:
+                'TASK: <agent_id>, <task_id>, <task description>, <context and details>'
 
-                Your job is to assign the tasks to the correct agents based on the task description.
-                The task description is in the following format:
-                'TASK: <agent_id>, <task_id>, <task_description>'
+                Output 'TERMINATE' if all tasks are completed or the planer agent ends the conversation with 'TERMINATE'.
 
                 """,
                 # All code required to complete this task must be contained within a single response.
@@ -251,7 +256,7 @@ class TaskHandlerAgent(RoutedAgent):
                     tasks.append({"recipient": recipient, "task_id": task_id, 
                                   "task_description": task_description,
                                   "agent_id": agent_id,
-                                  "message": Assigment(content=task_description)})
+                                  "message": Assignment(content=task_description)})
                 else:
                     raise ValueError(f"Unknown agent_id: {agent_id}")
 
@@ -272,7 +277,7 @@ class TaskHandlerAgent(RoutedAgent):
                 elif isinstance(result, TaskResults):
 
                     content = result.results
-                elif isinstance(result, AssigmentResults):
+                elif isinstance(result, AssignmentResults):
                     agent = "assistant_agent"
                     content = result.results
                 else:
@@ -307,16 +312,31 @@ class Assistant(RoutedAgent):
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content="""
-                Output markdown shell command to read script files or to verify the existence of a file.
-                Output markdown script to complete the task.
-                Use the current directory for file operations.
-                Work sequentially step by step to solve the task.
-                Always provide only a single output for each step.
-                Always save figures to file. Do not use show() or display() commands.
+You are a coding assistant agent.
+Your job is to create script (pwsh script or python code) to solve and report the given task.
 
-                After finished with all steps:
-                Output 'SUCCESS: <output file name>, <description and usage>' if executor was successful and the task is completed.
-                Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task.
+You only have an interactive chat with an executor agent with a local linux environment.
+The executor agent has the current directory as workspace.
+
+Use the following rules to create script and complete the task:
+- Provide only a single output of maximum 200 lines.
+- Add logging (print or echo) and try-except block to track and debug the script.
+- Use '<msg> Done', '<msg> Failed', 'Error: <msg>' tracking messages to indicate the completion of the task.
+- Always save figures to file. Do not use show() or display() commands.
+- Output markdown script (pwsh or python) to create a file and execute it as follows:
+```<language>
+# filename: <name of the script> # Optional, add only to retain the final script file for future reference.
+# description: <description of the script>
+# usage: <usage of the script>
+<code>
+
+Use the following outputs and keywords only to report your final results, do not use them in the script:
+- Output 'SUCCESS: <name of the script>, <description of the script> <usage of the script>' if executor was successful and the task is completed.
+- Also output 'SUMMARY: <summary of the task>' if the task is completed.
+- Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task.
+
+```
+
                 """,
                 # All code required to complete this task must be contained within a single response.
                 # Use the 'coding_agent' conda environment.
@@ -331,7 +351,7 @@ class Assistant(RoutedAgent):
         self._tool_agent = AgentId(tool_agent_type, f"Tool Agent - {self.id.key}")
 
     @message_handler
-    async def handle_task(self, message: Assigment, ctx: MessageContext) -> AssigmentResults:
+    async def handle_task(self, message: Assignment, ctx: MessageContext) -> AssignmentResults:
         session: List[LLMMessage] = [
             self._chat_history[0],
             UserMessage(content=message.content, source="user")
@@ -347,8 +367,9 @@ class Assistant(RoutedAgent):
             result = await self._model_client.create(session)
             print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
             if "SUCCESS" in result.content or "FAILURE" in result.content:
-                return AssigmentResults(results=result.content)
+                return AssignmentResults(results=result.content)
 
+        return AssignmentResults(results="The task is not completed. Please provide more information.")
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
     pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")
@@ -617,9 +638,30 @@ async def main() -> None:
             # Start the runtime and publish a message to the assistant.
             runtime.start()
             await runtime.publish_message(
-                UserAssingment("""
-                    Create a script that is able to modify the 'stock_returns_plot.py' file. 
-                    Use the RedBaron library to interact with the python file.
+                UserAssignment("""
+                    Create a script called 'refactor.py' that is able to modify the 'stock_returns_plot.py' file. 
+                    
+                    The "refactor.py' script should:
+                        - Use the RedBaron library to interact with the python file.
+                        - Replace hard coded values with variables.
+                        - Refactor the code to use functions.
+
+                    The stock_returns_plot.py file is in current folder and it is version controlled, we can revert to the original file if needed.
+                               
+                    How to find local files on linux?
+                    Where is the 'stock_returns_plot.py' file located?
+                    How to use git to revert the local changes of a file?
+                    Can we use RedBaron to:
+                    - find and list the hard coded values in the file?
+                    - replace the hard coded values with variables?
+                    - refactor the code to use functions?
+                    What is the purpose of the 'stock_returns_plot.py' file?
+                    How to add command line arguments to 'stock_returns_plot.py'?
+                    
+                    Where is the 'refactor.py' script located?
+                    What is already done in the 'refactor.py' script?
+                    How to use it to refactor the 'stock_returns_plot.py' file?
+                               
                             """), 
                 DefaultTopicId()
             )

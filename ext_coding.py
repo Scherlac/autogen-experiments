@@ -76,6 +76,14 @@ class SearchResults:
     results: str
 
 @dataclass
+class Assigment:
+    content: str
+
+@dataclass
+class AssigmentResults:
+    results: str
+
+@dataclass
 class Task:
     content: str
 
@@ -96,18 +104,18 @@ class PlanerAgent(RoutedAgent):
         super().__init__(
             description)
         self._model_client = model_client
-        self._search_agent_type = search_agent_type
-        self._assistant_agent_type = assistant_agent_type
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content="""
                 You are a planning agent.
                 The job is to break down complex tasks into smaller tasks.
-                User might give incorrect information, verify it if needed.
+                User might give you incorrect information, verify it if needed.
+                You only plan the tasks and assign them to the correct agents.
+                Do not execute the tasks yourself. Do not write code to complete the tasks.
 
                 Your team members are:
-                    Search agent (id: {search_agent_type}): Searches for information on internet.
-                    Assisten agent (id: {assistant_agent_type}): Creates and executes scripts on local environment.
+                    Search agent (id: {search_agent_type.type}): Searches for information on internet.
+                    Assisten agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
 
                 Manage **plan** to accomplish the task as follows:
                 ```python
@@ -144,6 +152,8 @@ class PlanerAgent(RoutedAgent):
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
                 """,
+
+
                 # All code required to complete this task must be contained within a single response.
                 # Use the 'coding_agent' conda environment.
                 # Use the `conda run -n coding_agent` command to run the script or instal pip packages.
@@ -152,10 +162,73 @@ class PlanerAgent(RoutedAgent):
         ]
 
 
+
+    @message_handler
+    async def handle_message(self, message: UserAssingment, ctx: MessageContext) -> None:
+        print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
+        self._chat_history.append(UserMessage(content=message.content, source="user"))
+
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nPlaner:\n{result.content}", flush=True)
+        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
+
+        await self.publish_message(Task(content=result.content), DefaultTopicId())
+
+
+    @message_handler
+    async def handle_taskresult(self, message: TaskResults, ctx: MessageContext) -> None:
+        # print(f"\n{'-'*80}\nTask Results:\n{message.results}", flush=True)
+        self._chat_history.append(AssistantMessage(content=message.results, source="task_handler"))
+
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nPlaner:\n{result.content}", flush=True)
+        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
+
+        await self.publish_message(Task(content=result.content), DefaultTopicId())
+
+
+@default_subscription
+class TaskHandlerAgent(RoutedAgent):
+    def __init__(self, 
+        model_client: ChatCompletionClient,
+        search_agent_type: AgentType,
+        assistant_agent_type: AgentType,
+        description: str = "A task handler agent.",
+                 ) -> None:
+
+        super().__init__(
+            description)
+        self._model_client = model_client
+        self._search_agent_type = search_agent_type
+        self._assistant_agent_type = assistant_agent_type
+        self._model_client = model_client
+        self._chat_history: List[LLMMessage] = [
+            SystemMessage(
+                content="""
+                You are a task handler agent.
+                Planer agent will provide you detailes about the plan, collected information and tasks.
+                Your job is to process the tasks and assign them to the correct agents.
+
+                You have two team members:
+                    Search agent (id: {search_agent_type.type}): Searches for information on internet.
+                    Assisten agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
+
+                Your job is to assign the tasks to the correct agents based on the task description.
+                The task description is in the following format:
+                'TASK: <agent_id>, <task_id>, <task_description>'
+
+                """,
+                # All code required to complete this task must be contained within a single response.
+                # Use the 'coding_agent' conda environment.
+                # Use the `conda run -n coding_agent` command to run the script or instal pip packages.
+
+            )    
+        ]
+
     async def proces_task(self):
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlanner:\n{result.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
+        print(f"\n{'-'*80}\nTask Handler:\n{result.content}", flush=True)
+        self._chat_history.append(AssistantMessage(content=result.content, source="task_handler"))
 
         tasks = []
         # split the result into lines and process each line
@@ -178,7 +251,7 @@ class PlanerAgent(RoutedAgent):
                     tasks.append({"recipient": recipient, "task_id": task_id, 
                                   "task_description": task_description,
                                   "agent_id": agent_id,
-                                  "message": Task(content=task_description)})
+                                  "message": Assigment(content=task_description)})
                 else:
                     raise ValueError(f"Unknown agent_id: {agent_id}")
 
@@ -194,14 +267,19 @@ class PlanerAgent(RoutedAgent):
             for task in tasks:
                 result = await task["result"]
                 if isinstance(result, SearchResults):
+                    agent = "search_agent"
                     content = result.results
                 elif isinstance(result, TaskResults):
+
+                    content = result.results
+                elif isinstance(result, AssigmentResults):
+                    agent = "assistant_agent"
                     content = result.results
                 else:
                     raise ValueError(f"Unknown result type: {result}")
 
                 print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
-                self._chat_history.append(AssistantMessage(content=content, source="assistant"))
+                self._chat_history.append(AssistantMessage(content=content, source=agent))
 
             return await self.publish_message(TaskResults(results=f"The tasks {[task['task_id'] for task in tasks]} are completed. Continueing with planing activities."), DefaultTopicId())
         
@@ -210,27 +288,12 @@ class PlanerAgent(RoutedAgent):
             "FAILURE" not in result.content:
             return await self.publish_message(TaskResults(results="Please provide a valid task or end the conversation with 'TERMINATE'."), DefaultTopicId())
 
-
     @message_handler
-    async def handle_message(self, message: UserAssingment, ctx: MessageContext) -> None:
-        self._chat_history.append(UserMessage(content=message.content, source="user"))
+    async def handle_task(self, message: Task, ctx: MessageContext) -> None:
+        # print(f"\n{'-'*80}\nTask:\n{message.content}", flush=True)
+        self._chat_history.append(AssistantMessage(content=message.content, source="task_handler"))
 
         await self.proces_task()
-
-
-    @message_handler
-    async def handle_taskresult(self, message: TaskResults, ctx: MessageContext) -> None:
-        self._chat_history.append(AssistantMessage(content=message.results, source="assistant"))
-
-        await self.proces_task()
-
-    @message_handler
-    async def handle_searchresults(self, message: SearchResults, ctx: MessageContext) -> None:
-        self._chat_history.append(AssistantMessage(content=message.results, source="search_agent"))
-
-        await self.proces_task() 
-
-
 
 @default_subscription
 class Assistant(RoutedAgent):
@@ -246,19 +309,21 @@ class Assistant(RoutedAgent):
                 content="""
                 Output markdown shell command to read script files or to verify the existence of a file.
                 Output markdown script to complete the task.
-                Output SEARCH: 'query text' if anditional information is required.
-                Use existing script file as a starting point if requested.
                 Use the current directory for file operations.
-                The first line of the code block is as follows: '# filename: <filename>'.
                 Work sequentially step by step to solve the task.
                 Always provide only a single output for each step.
                 Always save figures to file. Do not use show() or display() commands.
-                Output SUCCESS: 'output file name', 'description and usage' if the task is completed.
-                Output FAILURE: 'reason for failure' if the task is not completed.
+
+                After finished with all steps:
+                Output 'SUCCESS: <output file name>, <description and usage>' if executor was successful and the task is completed.
+                Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task.
                 """,
                 # All code required to complete this task must be contained within a single response.
                 # Use the 'coding_agent' conda environment.
                 # Use the `conda run -n coding_agent` command to run the script or instal pip packages.
+                # Output SEARCH: 'query text' if anditional information is required.
+                # The first line of the code block is as follows: '# filename: <name of the script>'.
+                # Use existing script file as a starting point if requested.
 
             )
         ]
@@ -266,27 +331,23 @@ class Assistant(RoutedAgent):
         self._tool_agent = AgentId(tool_agent_type, f"Tool Agent - {self.id.key}")
 
     @message_handler
-    async def handle_task(self, message: Task, ctx: MessageContext) -> None:
-        self._chat_history.append(UserMessage(content=message.content, source="user"))
-        result = await self._model_client.create(self._chat_history)
+    async def handle_task(self, message: Assigment, ctx: MessageContext) -> AssigmentResults:
+        session: List[LLMMessage] = [
+            self._chat_history[0],
+            UserMessage(content=message.content, source="user")
+        ]
+        result = await self._model_client.create(session)
         print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=result.content, source="assistant"))
-        await self.send_message(CommandMessage(command=result.content), self._tool_agent)
+        session.append(AssistantMessage(content=result.content, source="assistant"))
 
-    @message_handler
-    async def handle_commandresponse(self, message: CommandResponse, ctx: MessageContext) -> None:
-        self._chat_history.append(AssistantMessage(content=message.output, source="executor"))
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
-        if "SUCCESS" in result.content or "FAILURE" in result.content:
-            await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
+        for i in range(5):
+            message = await self.send_message(CommandMessage(command=result.content), self._tool_agent)
+            session.append(AssistantMessage(content=message.output, source="executor"))
 
-        elif "SEARCH" in result.content:
-            await self.publish_message(Search(query=result.content), DefaultTopicId())
-
-        else:
-            self._chat_history.append(AssistantMessage(content=result.content, source="assistant"))
-            await self.send_message(CommandMessage(command=result.content), self._tool_agent)
+            result = await self._model_client.create(session)
+            print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
+            if "SUCCESS" in result.content or "FAILURE" in result.content:
+                return AssigmentResults(results=result.content)
 
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
@@ -306,14 +367,14 @@ class Executor(RoutedAgent):
         self._code_executor = code_executor
 
     @message_handler
-    async def handle_commandmessaga(self, message: CommandMessage, ctx: MessageContext) -> None:
+    async def handle_commandmessaga(self, message: CommandMessage, ctx: MessageContext) -> CommandResponse:
         code_blocks = extract_markdown_code_blocks(message.command)
         if code_blocks:
             result = await self._code_executor.execute_code_blocks(
                 code_blocks, cancellation_token=ctx.cancellation_token
             )
             print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
-            await self.publish_message(CommandResponse(output=result.output), DefaultTopicId())
+            return CommandResponse(output=result.output)
 
 
 
@@ -434,7 +495,9 @@ class SearchAgent(RoutedAgent):
 
     @message_handler
     async def handle_message(self, message: Search, ctx: MessageContext) -> SearchResults:
-        session: List[LLMMessage] = [UserMessage(content=message.query, source="user")]
+        session: List[LLMMessage] = [
+            self._chat_history[0],
+            UserMessage(content=message.query, source="user")]
         output_messages = await tool_agent_caller_loop(
             self,
             tool_agent_id=self._tool_agent_id,
@@ -468,7 +531,6 @@ async def main() -> None:
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         temperature=0.0,
     )            
-
 
     work_dir = "/home/workspace" # tempfile.mkdtemp()
 
@@ -537,6 +599,17 @@ async def main() -> None:
             )
         )
 
+        task_handler_agent = await TaskHandlerAgent.register(
+            runtime,
+            "task_handler",
+            lambda: TaskHandlerAgent(
+                description="A task handler agent.",
+                model_client=model_client,
+                search_agent_type=search_agent,
+                assistant_agent_type=assistant_agent
+            )
+        )
+
         # The output is written in a file named as this script file with date and time appended to it with .txt extension.
         filename = os.path.basename(__file__).replace(".py", f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
         with open(filename, 'w', encoding='utf-8') as sys.stdout:
@@ -550,8 +623,8 @@ async def main() -> None:
                             """), 
                 DefaultTopicId()
             )
-            # wait for 20 minutes for the agents to complete the tasks
-            await asyncio.sleep(1200)
+            # # wait for 20 minutes for the agents to complete the tasks
+            # await asyncio.sleep(1200)
             await runtime.stop_when_idle()
 
 asyncio.run(main())

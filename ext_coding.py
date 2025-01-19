@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import asyncio
+import json
 from datetime import datetime
 
 from dataclasses import dataclass
@@ -109,7 +110,6 @@ class PlanerAgent(RoutedAgent):
                 content="""
                 You are a planning agent.
                 The job is to break down complex tasks into smaller tasks.
-                User might give you incorrect information, verify it if needed.
 
 """ f"""
                 Your team members are:
@@ -133,11 +133,13 @@ class PlanerAgent(RoutedAgent):
                 # filename: collection.py
                 collection = {
                     "<topic name>": {
-                        "<sub topic name>": { # Only add sub topic for verified information
+                        "<sub topic name>": { # Only add sub topic for data from user message, search results or task results
                             "description": "<description>",
-                            "usage": "<usage>", # Optional, only add for scripts if information is available
-                            "file_name": "<file name>", # Optional, only add for scripts if information is available
-                            "link": "<link>"  # Optional, only add for search results if information is available
+                            "usage": "<usage>", # Optional, only add if information is available
+                            "file_name": "<file name>", # Optional, only add if information is available
+                            "script": "<script>", # Optional, only add if information is available
+                            "language": "<language>", # Optional, only add if information is available
+                            "link": "<link>"  # Optional, only add if information is available
                         },
                         ...
                     },
@@ -150,6 +152,9 @@ class PlanerAgent(RoutedAgent):
                 'TASK: <agent_id>, <task_id>, <task_description>'
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
+
+                Store all important information in the file planer_state.json and use them to recover the state in case of failure.
+
                 """,
 
 
@@ -215,8 +220,10 @@ class TaskHandlerAgent(RoutedAgent):
                     Search agent (id: {search_agent_type.type}): Searches for information on internet.
                     Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
 """ """
-                Your job is to prepare a single task and assign to the correct agents.
-                Provide context and details based on chat history.
+                Your job is to prepare a single task and assign to the specific agents.
+                Specific agents have no access to chat history. So, provide all related context
+                and details for them based on chat history.
+
                 Output a single task you intend to assign as follows:
                 'TASK: <agent_id>, <task_id>, <task description>, <context and details>'
 
@@ -271,6 +278,7 @@ class TaskHandlerAgent(RoutedAgent):
 
             for task in tasks:
                 result = await task["result"]
+                task.pop("result")
                 if isinstance(result, SearchResults):
                     agent = "search_agent"
                     content = result.results
@@ -282,11 +290,15 @@ class TaskHandlerAgent(RoutedAgent):
                     content = result.results
                 else:
                     raise ValueError(f"Unknown result type: {result}")
+                task['content'] = content
 
                 print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
                 self._chat_history.append(AssistantMessage(content=content, source=agent))
 
-            return await self.publish_message(TaskResults(results=f"The tasks {[task['task_id'] for task in tasks]} are completed. Continueing with planing activities."), DefaultTopicId())
+            return await self.publish_message(
+                TaskResults(results=f"Report on tasks:\n```json\n{"\n```\n```json\n".join([f"{
+                    json.dumps(task)
+                    }" for task in tasks])}\njson\nContinuing with planing activities."), DefaultTopicId())
         
         if "TERMINATE" not in result.content and \
             "SUCCESS" not in result.content and \
@@ -313,27 +325,34 @@ class Assistant(RoutedAgent):
             SystemMessage(
                 content="""
 You are a coding assistant agent.
-Your job is to create script (pwsh script or python code) to solve and report the given task.
+Your job is to create script (bash, pwsh script or python code) to work on the assigned task and then provide final report on the given task.
 
 You only have an interactive chat with an executor agent with a local linux environment.
 The executor agent has the current directory as workspace.
+In case exact facts are not available, you can return FAILURE and ask for more information.
 
-Use the following rules to create script and complete the task:
+
+
+# Working on the task (first phase):
+
+Use the following rules to create script and work the task:
 - Provide only a single output of maximum 200 lines.
 - Add logging (print or echo) and try-except block to track and debug the script.
 - Use '<msg> Done', '<msg> Failed', 'Error: <msg>' tracking messages to indicate the completion of the task.
 - Always save figures to file. Do not use show() or display() commands.
-- Output markdown script (pwsh or python) to create a file and execute it as follows:
+- Output markdown script (bash, pwsh or python) to create a file and execute it as follows:
 ```<language>
 # filename: <name of the script> # Optional, add only to retain the final script file for future reference.
 # description: <description of the script>
 # usage: <usage of the script>
 <code>
 
-Use the following outputs and keywords only to report your final results, do not use them in the script:
+# Final report (second phase):
+
+Use the following rules and keywords only to report your final results, do not use them in the script:
 - Output 'SUCCESS: <name of the script>, <description of the script> <usage of the script>' if executor was successful and the task is completed.
 - Also output 'SUMMARY: <summary of the task>' if the task is completed.
-- Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task.
+- Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task or to ask for more information.
 
 ```
 
@@ -396,6 +415,7 @@ class Executor(RoutedAgent):
             )
             print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
             return CommandResponse(output=result.output)
+        return CommandResponse(output="No code blocks found in the message.")
 
 
 
@@ -637,34 +657,113 @@ async def main() -> None:
 
             # Start the runtime and publish a message to the assistant.
             runtime.start()
-            await runtime.publish_message(
-                UserAssignment("""
-                    Create a script called 'refactor.py' that is able to modify the 'stock_returns_plot.py' file. 
+            # await runtime.publish_message(
+            #     UserAssignment("""
+            #         Create a script called 'refactor.py' that is able to modify the 'stock_returns_plot.py' file. 
                     
-                    The "refactor.py' script should:
-                        - Use the RedBaron library to interact with the python file.
-                        - Replace hard coded values with variables.
-                        - Refactor the code to use functions.
+            #         The "refactor.py' script should:
+            #             - Use the RedBaron library to interact with the python file.
+            #             - Replace hard coded values with variables.
+            #             - Refactor the code to use functions.
 
-                    The stock_returns_plot.py file is in current folder and it is version controlled, we can revert to the original file if needed.
+            #         The stock_returns_plot.py file is in current folder and it is version controlled, we can revert to the original file if needed.
                                
-                    How to find local files on linux?
-                    Where is the 'stock_returns_plot.py' file located?
-                    How to use git to revert the local changes of a file?
-                    Can we use RedBaron to:
-                    - find and list the hard coded values in the file?
-                    - replace the hard coded values with variables?
-                    - refactor the code to use functions?
-                    What is the purpose of the 'stock_returns_plot.py' file?
-                    How to add command line arguments to 'stock_returns_plot.py'?
+            #         How to find local files on linux?
+            #         Where is the 'stock_returns_plot.py' file located?
+            #         How to use git to revert the local changes of a file?
+            #         Can we use RedBaron to:
+            #         - find and list the hard coded values in the file?
+            #         - replace the hard coded values with variables?
+            #         - refactor the code to use functions?
+            #         What is the purpose of the 'stock_returns_plot.py' file?
+            #         How to add command line arguments to 'stock_returns_plot.py'?
                     
-                    Where is the 'refactor.py' script located?
-                    What is already done in the 'refactor.py' script?
-                    How to use it to refactor the 'stock_returns_plot.py' file?
+            #         Where is the 'refactor.py' script located?
+            #         What is already done in the 'refactor.py' script?
+            #         How to use it to refactor the 'stock_returns_plot.py' file?
                                
-                            """), 
+            #                 """), 
+            #     DefaultTopicId()
+            # )
+
+#             await runtime.publish_message(
+#                 UserAssignment( \
+# """
+# Similar projects can be found at: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+# Download the mentioned file and check the code for autogen imports.
+# Coder agent is able to use curl to download the file from the given URL.
+
+# Ensure the coder also uses the autogen library to implement the sceptic agent. Eg `grep -A 30 'import'` the code for autogen imports.
+# Give an example of how to use the sceptic agent and how to test it. 
+
+# Model client:                      
+# ```python
+# model_client=AzureOpenAIChatCompletionClient(
+#         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT_URL"),
+#         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+#         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+#         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+#         temperature=0.0,
+#     )            
+# ```
+
+# Register the agent as follows:
+# ```python
+# planer_agent = await ScepticAgent.register(
+#     runtime,
+#     "sceptic",
+#     lambda: ScepticAgent(
+#         description="A sceptic agent", 
+#         model_client=model_client,
+#     )
+# )
+# ```  
+
+# Create runtime as follows:
+# ```python
+# runtime = SingleThreadedAgentRuntime()
+# ```
+
+# Start the runtime and publish a message to the assistant as follows:
+# ```python
+# runtime.start()
+# await runtime.publish_message(
+#     UserAssignment("Please write a hello world program in python."), 
+#     DefaultTopicId() )
+# ```
+
+# Main contains the following code to start:
+# ```python
+# asyncio.run(main())
+# ```
+
+# """), 
+#                 DefaultTopicId()
+#             )
+#             await runtime.publish_message(
+#                 UserAssignment( \
+# """
+# Download the following script: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+# Review the code and make a plan to refactor the code.
+
+# """), 
+#                 DefaultTopicId()
+#             )
+
+            await runtime.publish_message(
+                UserAssignment( \
+"""
+Create a fact dictionary with embeddings that can hold searchable information on content of local files.
+Download the following script: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+Fill the fact dictionary with class information about the downloaded script.
+
+You already started but not really finished. List the content of the working directory and check the content.
+The fact_dictionary.json still has no information on the downloaded script.
+
+"""), 
                 DefaultTopicId()
             )
+
             # # wait for 20 minutes for the agents to complete the tasks
             # await asyncio.sleep(1200)
             await runtime.stop_when_idle()

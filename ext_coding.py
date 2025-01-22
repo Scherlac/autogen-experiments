@@ -92,64 +92,141 @@ class Task:
 class TaskResults:
     results: str
 
+# read planer state from file
+def read_planer_state():
+    """
+    Read the planer state from the file planer_state.json.
+
+    Returns:
+        dict: The planer state.
+    """
+    if not os.path.exists("planer_state.json"):
+        return {}
+    with open("planer_state.json", "r") as file:
+        return json.load(file)
+    
+
+# write planer state to file
+def write_planer_state(state: dict):
+    """
+    Write the planer state to the file planer_state.json.
+
+    Args:
+        state (dict): The planer state.
+    """
+    with open("planer_state.json", "w") as file:
+        json.dump(state, file)
+
+# function tool for reading and writing planer state
+read_planer_state_tool = FunctionTool(read_planer_state, description="Read the planer state from the file planer_state.json.")
+write_planer_state_tool = FunctionTool(write_planer_state, description="Write the planer state to the file planer_state.json.")
+
+@default_subscription
+class PlanStoreAgent(RoutedAgent):
+    def __init__(self, 
+        model_client: ChatCompletionClient,
+        tool_schema: List[ToolSchema],
+        tool_agent_type: AgentType,
+        description: str = "Plan Store Agent",
+                 ) -> None:
+        super().__init__(description)
+        self._model_client = model_client
+        self._chat_history: List[LLMMessage] = [
+            SystemMessage(
+                content="""
+                You are a plan store agent.
+                Your tools are read_planer_state_tool and write_planer_state_tool.
+                You make only one action call at a time.
+                Once you have the results, you send it to the chat, never do other actions based on them.
+                """,
+            )
+        ]
+        self._tool_schema = tool_schema
+        self._tool_agent_id = AgentId(type=tool_agent_type, key=self.id.key)
+
+        #self._tools = tools
+
+    @message_handler
+    async def handle_message(self, message: Message, ctx: MessageContext) -> Message:
+        session: List[LLMMessage] = [
+            self._chat_history[0],
+            UserMessage(content=message.content, source="user")]
+        output_messages = await tool_agent_caller_loop(
+            self,
+            tool_agent_id=self._tool_agent_id,
+            model_client=self._model_client,
+            input_messages=session,
+            tool_schema=self._tool_schema,
+            cancellation_token=ctx.cancellation_token,
+        )
+        # Extract the final response from the output messages.
+        final_response = output_messages[-1].content
+        assert isinstance(final_response, str)
+        return Message(content=final_response)
+
+
 
 @default_subscription
 class PlanerAgent(RoutedAgent):
     def __init__(self, 
         model_client: ChatCompletionClient,
-        search_agent_type: AgentType,
-        assistant_agent_type: AgentType,
+        # planer_status_agent_type: AgentType,
+        # search_agent_type: AgentType,
+        # assistant_agent_type: AgentType,
         description: str = "A planner agent", 
+
                  ) -> None:
 
         super().__init__(
             description)
         self._model_client = model_client
+        # self._planer_status_agent_type = planer_status_agent_type
+        # self._planer_status_agent = AgentId(planer_status_agent_type, f"Planer Status Agent - {self.id.key}")
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content="""
                 You are a planning agent.
-                The job is to break down complex tasks into smaller tasks.
+                The job is to continue with previously created plans or break down complex tasks into smaller tasks.
 
 """ f"""
                 Your team members are:
-                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local linux environment.
-                    Search agent (id: {search_agent_type.type}): Searches for programming manuals on the internet.
+                    Task handler agent: Assigns tasks to the specific agents.
 """ """
-                Manage **plan** to accomplish the task as follows:
-                ```python
-                # filename: plan.py
-                plan = [
-                    {
-                        "step": <step number>,
-                        "description": "<step description>"
-                    },
-                    ...
-                    ]
+
+                List the original assignment verbatim as follows:
+                ```text
+                # Assignment:
+                <original assignment>
                 ```
 
-                Manage the list of **collected information** as we get more results as follows:
-                ```python
-                # filename: collection.py
-                collection = {
-                    "<topic name>": {
-                        "<sub topic name>": { # Only add sub topic for data from user message, search results or task results
-                            "description": "<description>",
-                            "usage": "<usage>", # Optional, only add if information is available
-                            "file_name": "<file name>", # Optional, only add if information is available
-                            "script": "<script>", # Optional, only add if information is available
-                            "language": "<language>", # Optional, only add if information is available
-                            "link": "<link>"  # Optional, only add if information is available
-                        },
-                        ...
-                    },
-                    ...
-                }
+
+                Manage **plan** to accomplish the task as follows:
+                ```text
+                # Plan:
+                - step <step number>: <step description>
+                ```
+
+                Manage the list of **collected information** as we progress as follows:
+                ```text
+                # Collected Information:
+
+                ## <topic name>
+                <description of the topic>
+                
+                ### <sub topic name> // Only add sub topic for data from 'user message', 'search results' or 'task results'
+                <description of the sub topic>
+
+                "usage": "<usage>", # Optional, only add if information is available
+                "file_name": "<file name>", # Optional, only add if information is available
+                "script": "<script>", # Optional, only add if information is available
+                "language": "<language>", # Optional, only add if information is available
+                "link": "<link>"  # Optional, only add if information is available
+
                 ```
 
                 Manage the **tasks** and **prioritize** them based on the plan.
                 Assign the next tasks using the following format:
-                'TASK: <agent_id>, <task_id>, <task_description>'
+                'TASK: <task_id>, <task_description>'
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
 
@@ -165,17 +242,23 @@ class PlanerAgent(RoutedAgent):
                 # Do not execute the tasks yourself. Do not write code to complete the tasks.
 
             )
+
         ]
+
 
 
 
     @message_handler
     async def handle_message(self, message: UserAssignment, ctx: MessageContext) -> None:
         print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
-        self._chat_history.append(UserMessage(content=message.content, source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\n{message.content}", source="user"))
+
+        # # load the planer state from the file
+        # output = await self.send_message(Message(content="Load the planer state from the file."), self._planer_status_agent)
+        # self._chat_history.append(AssistantMessage(content=output.content, source="storage"))
 
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlaner:\n{result.content}", flush=True)
+        print(f"\n{'-'*80}\nPlaner  ({self._id}):\n{result.content}", flush=True)
         self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
 
         await self.publish_message(Task(content=result.content), DefaultTopicId())
@@ -187,10 +270,11 @@ class PlanerAgent(RoutedAgent):
         self._chat_history.append(AssistantMessage(content=message.results, source="task_handler"))
 
         result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlaner:\n{result.content}", flush=True)
+        print(f"\n{'-'*80}\nPlaner  ({self._id}):\n{result.content}", flush=True)
         self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
 
-        await self.publish_message(Task(content=result.content), DefaultTopicId())
+        if "TERMINATE" not in result.content:
+            await self.publish_message(Task(content=result.content), DefaultTopicId())
 
 
 @default_subscription
@@ -199,6 +283,7 @@ class TaskHandlerAgent(RoutedAgent):
         model_client: ChatCompletionClient,
         search_agent_type: AgentType,
         assistant_agent_type: AgentType,
+        planar_agent_type: AgentType,
         description: str = "A task handler agent.",
                  ) -> None:
 
@@ -207,27 +292,42 @@ class TaskHandlerAgent(RoutedAgent):
         self._model_client = model_client
         self._search_agent_type = search_agent_type
         self._assistant_agent_type = assistant_agent_type
+        self._planar_agent_type = planar_agent_type
         self._model_client = model_client
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content = """
-                You are a task handler agent.
-                Planer agent will provide you details about the main objective, collected information, the plan.
-                Planer agent will prepare ideas of multiple tasks as follows:
+                You are a task handler agent. You are responsible for assigning tasks to specific agents based assigned task and chat history.
                 'TASK: <agent_id>, <task_id>, <task_description>'
 """ f"""
-                You have two team members:
-                    Search agent (id: {search_agent_type.type}): Searches for information on internet.
-                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local environment.
+                You have three team members:
+                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local linux environment (bash, pwsh, python, ls, git, curl, etc.).
+                    Search agent (id: {search_agent_type.type}): Only to searches information on Google website.
+                    Planer agent: (id: {planar_agent_type.type}): Breaks down complex tasks into smaller tasks and assigns them to further agents.
+
 """ """
-                Your job is to prepare a single task and assign to the specific agents.
-                Specific agents have no access to chat history. So, provide all related context
+                Your job is to prepare a single task and assign to one agents.
+                Team members have no access to chat history. So, provide all related context
                 and details for them based on chat history.
 
                 Output a single task you intend to assign as follows:
-                'TASK: <agent_id>, <task_id>, <task description>, <context and details>'
+                'TASK: <agent_id>, <task_id>, <task description>, <context and details>, <required output>'
 
-                Output 'TERMINATE' if all tasks are completed or the planer agent ends the conversation with 'TERMINATE'.
+                In case the selected agent fails, repeat the task with more information or you can try to assign to another agent.
+                If the task is too complex assign it to the planer agent.
+                
+                Output 'FAILURE' if the task is repeatedly not completed.
+                Output 'SUCCESS' if the task is completed successfully.
+                Output 'SUMMARY' on 'SUCCESS' or 'FAILURE' with the summary of the task as follows:
+                'SUMMARY: <specific agent>, <summary of the task>, <summary of the script output>'
+                Output 'OUTPUT' on 'SUCCESS' with the detailed output of the task as follows:
+                'OUTPUT:
+                ```<format>
+                <output>
+                ```'
+
+                Output 'TERMINATE' non of the agents is able to complete the task after multiple attempts.
+
 
                 """,
                 # All code required to complete this task must be contained within a single response.
@@ -238,72 +338,87 @@ class TaskHandlerAgent(RoutedAgent):
         ]
 
     async def proces_task(self):
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nTask Handler:\n{result.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=result.content, source="task_handler"))
+        while True:
+            result = await self._model_client.create(self._chat_history)
+            print(f"\n{'-'*80}\nTask Handler ({self._id}):\n{result.content}", flush=True)
+            self._chat_history.append(AssistantMessage(content=result.content, source="task_handler"))
 
-        tasks = []
-        # split the result into lines and process each line
-        for message in result.content.split("\n"):
-            task_rgex = r".*TASK: (\w+), (\w+), (.+)" 
-            if re.match(task_rgex, message):
-                agent_id, task_id, task_description = re.match(task_rgex, message).groups()
-                # In case agent_id is 'similar' to search_agent_type, send the task to the search agent.
-                if agent_id == self._search_agent_type.type:
-                    agent_id = f"Search Agent - Task {task_id}"
-                    recipient = AgentId(self._search_agent_type, agent_id)
-                    tasks.append({"recipient": recipient, "task_id": task_id, 
-                                  "task_description": task_description,
-                                  "agent_id": agent_id,
-                                  "message": Search(query=task_description)})
-                # In case agent_id is 'similar' to assistant_agent_type, send the task to the assistant agent.
-                elif agent_id == self._assistant_agent_type.type:
-                    agent_id= f"Assistant Agent - {task_id}"
-                    recipient = AgentId(self._assistant_agent_type, agent_id)
-                    tasks.append({"recipient": recipient, "task_id": task_id, 
-                                  "task_description": task_description,
-                                  "agent_id": agent_id,
-                                  "message": Assignment(content=task_description)})
-                else:
-                    raise ValueError(f"Unknown agent_id: {agent_id}")
+            if "TERMINATE" in result.content:
+                break
+            
+            if "SUCCESS" in result.content or \
+                "FAILURE" in result.content:
+                return await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
 
-        if len(tasks) > 0:
-            tasks = [ { 
-                "agent_id": task["agent_id"],
-                "task_id": task["task_id"],
-                "task_description": task["task_description"],
-                "result": self.send_message(task["message"], task["recipient"])
-                }
-                for task in tasks]
 
-            for task in tasks:
-                result = await task["result"]
-                task.pop("result")
-                if isinstance(result, SearchResults):
-                    agent = "search_agent"
-                    content = result.results
-                elif isinstance(result, TaskResults):
+            tasks = []
+            # split the result into lines and process each line
+            for message in result.content.split("\n"):
+                task_rgex = r".*TASK: (\w+), (\w+), (.+)" 
+                if re.match(task_rgex, message):
+                    agent_id, task_id, task_description = re.match(task_rgex, message).groups()
+                    # In case agent_id is 'similar' to search_agent_type, send the task to the search agent.
+                    if agent_id == self._search_agent_type.type:
+                        agent_id = f"{self._id} -> T:{task_id} -> Search"
+                        recipient = AgentId(self._search_agent_type, agent_id)
+                        tasks.append({"recipient": recipient, "task_id": task_id, 
+                                    "task_description": task_description,
+                                    "agent_id": agent_id,
+                                    "message": Search(query=task_description)})
+                    # In case agent_id is 'similar' to assistant_agent_type, send the task to the assistant agent.
+                    elif agent_id == self._assistant_agent_type.type:
+                        agent_id= f"{self._id} -> T:{task_id} -> Assistant"
+                        recipient = AgentId(self._assistant_agent_type, agent_id)
+                        tasks.append({"recipient": recipient, "task_id": task_id, 
+                                    "task_description": task_description,
+                                    "agent_id": agent_id,
+                                    "message": Assignment(content=task_description)})
+                    # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
+                    elif agent_id == self._planar_agent_type.type:
+                        agent_id= f"{self._id} -> T:{task_id} -> Planer"
+                        recipient = AgentId(self._planar_agent_type, agent_id)
+                        tasks.append({"recipient": recipient, "task_id": task_id, 
+                                    "task_description": task_description,
+                                    "agent_id": agent_id,
+                                    "message": UserAssignment(content=task_description)})
+                    else:
+                        raise ValueError(f"Unknown agent_id: {agent_id}")
 
-                    content = result.results
-                elif isinstance(result, AssignmentResults):
-                    agent = "assistant_agent"
-                    content = result.results
-                else:
-                    raise ValueError(f"Unknown result type: {result}")
-                task['content'] = content
+            if len(tasks) > 0:
+                tasks = [ { 
+                    "agent_id": task["agent_id"],
+                    "task_id": task["task_id"],
+                    "task_description": task["task_description"],
+                    "result": self.send_message(task["message"], task["recipient"])
+                    }
+                    for task in tasks]
 
-                print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
-                self._chat_history.append(AssistantMessage(content=content, source=agent))
+                for task in tasks:
+                    result = await task["result"]
+                    task.pop("result")
+                    if isinstance(result, SearchResults):
+                        agent = "search_agent"
+                        content = result.results
+                    elif isinstance(result, TaskResults):
 
-            return await self.publish_message(
-                TaskResults(results=f"Report on tasks:\n```json\n{"\n```\n```json\n".join([f"{
-                    json.dumps(task)
-                    }" for task in tasks])}\njson\nContinuing with planing activities."), DefaultTopicId())
+                        content = result.results
+                    elif isinstance(result, AssignmentResults):
+                        agent = "assistant_agent"
+                        content = result.results
+                    else:
+                        raise ValueError(f"Unknown result type: {result}")
+                    task['content'] = content
+
+                    print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
+                    self._chat_history.append(AssistantMessage(content=content, source=agent))
+
+            else:
+                break
+
+
+        return await self.publish_message(
+            TaskResults(results="No more task was fount."), DefaultTopicId())
         
-        if "TERMINATE" not in result.content and \
-            "SUCCESS" not in result.content and \
-            "FAILURE" not in result.content:
-            return await self.publish_message(TaskResults(results="Please provide a valid task or end the conversation with 'TERMINATE'."), DefaultTopicId())
 
     @message_handler
     async def handle_task(self, message: Task, ctx: MessageContext) -> None:
@@ -351,7 +466,8 @@ Use the following rules to create script and work the task:
 
 Use the following rules and keywords only to report your final results, do not use them in the script:
 - Output 'SUCCESS: <name of the script>, <description of the script> <usage of the script>' if executor was successful and the task is completed.
-- Also output 'SUMMARY: <summary of the task>' if the task is completed.
+- Also output 'SUMMARY: <summary of the task>, <summary of the script output>' if the task is completed.
+- Also output 'OUTPUT: <output of the script>' if the task is completed.
 - Output 'FAILURE: <reason for failure>, <additional requirements>, <search recommendation>' if unable to complete the task or to ask for more information.
 
 ```
@@ -391,7 +507,9 @@ Use the following rules and keywords only to report your final results, do not u
         return AssignmentResults(results="The task is not completed. Please provide more information.")
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
-    pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")
+    # pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")
+    # extract the language and code content from the markdown text
+    pattern = re.compile(r"```(?P<language>[\w\+\-]+)?\n(?P<code>[\s\S]*?)```")
     matches = pattern.findall(markdown_text)
     code_blocks: List[CodeBlock] = []
     for match in matches:
@@ -628,14 +746,36 @@ async def main() -> None:
             ),
         )
 
+        # planer_tool_agent = await ToolAgent.register(
+        #     runtime,
+        #     "planer_tool_agent",
+        #     lambda: ToolAgent(
+        #         description="Planer Status Agent",
+        #         tools=[read_planer_state_tool, write_planer_state_tool],
+        #     )
+        # )
+
+        # planer_status_agent = await PlanStoreAgent.register(
+        #     runtime,
+        #     "planer_status_agent",
+        #     lambda: PlanStoreAgent(
+        #         description="Plan Store Agent",
+        #         model_client=model_client,
+        #         tool_schema=[read_planer_state_tool.schema, write_planer_state_tool.schema],
+        #         tool_agent_type=planer_tool_agent
+        #     )
+        # )
+
+
         planer_agent = await PlanerAgent.register(
             runtime,
             "planner",
             lambda: PlanerAgent(
                 description="A planner agent", 
                 model_client=model_client,
-                search_agent_type=search_agent,
-                assistant_agent_type=assistant_agent
+                # planer_status_agent_type=planer_status_agent,
+                # search_agent_type=search_agent,
+                # assistant_agent_type=assistant_agent
                 
             )
         )
@@ -647,7 +787,9 @@ async def main() -> None:
                 description="A task handler agent.",
                 model_client=model_client,
                 search_agent_type=search_agent,
-                assistant_agent_type=assistant_agent
+                assistant_agent_type=assistant_agent,
+                planar_agent_type=planer_agent
+
             )
         )
 
@@ -753,12 +895,21 @@ async def main() -> None:
             await runtime.publish_message(
                 UserAssignment( \
 """
-Create a fact dictionary with embeddings that can hold searchable information on content of local files.
-Download the following script: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
-Fill the fact dictionary with class information about the downloaded script.
+Download the following script: url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
 
-You already started but not really finished. List the content of the working directory and check the content.
-The fact_dictionary.json still has no information on the downloaded script.
+Extract planer agent to planer_agent.py and planer_agent.json from ext_coding.py
+Extract task handler agent to task_handler_agent.py and task_handler_agent.json from ext_coding.py
+Extract search agent to search_agent.py and search_agent.json from ext_coding.py
+Extract assistant agent to assistant_agent.py and assistant_agent.json from ext_coding.py
+Extract executor agent to executor_agent.py and executor_agent.json from ext_coding.py
+Create a sceptic agent to raise doubts about the progress of the current task to sceptic_agent.py and sceptic_agent.json.
+
+Extract single threaded agent runtime to agent_runtime.py and agent_runtime.json from ext_coding.py
+
+Use ast module to extract the class information and redbaron to refactor the code. Libraries are already installed in the environment.
+
+Agent descriptions and system messages should be extracted to the json files and loaded from agent __init__.
+The extracted code should contain the required imports.
 
 """), 
                 DefaultTopicId()

@@ -3,6 +3,7 @@ import sys
 import re
 import asyncio
 import json
+import random
 from datetime import datetime
 
 from dataclasses import dataclass
@@ -173,6 +174,7 @@ class PlanerAgent(RoutedAgent):
         # planer_status_agent_type: AgentType,
         # search_agent_type: AgentType,
         # assistant_agent_type: AgentType,
+        task_handler_agent_type: AgentType,
         description: str = "A planner agent", 
 
                  ) -> None:
@@ -180,6 +182,8 @@ class PlanerAgent(RoutedAgent):
         super().__init__(
             description)
         self._model_client = model_client
+        self._task_handler_agent_type = task_handler_agent_type
+
         # self._planer_status_agent_type = planer_status_agent_type
         # self._planer_status_agent = AgentId(planer_status_agent_type, f"Planer Status Agent - {self.id.key}")
         self._chat_history: List[LLMMessage] = [
@@ -230,8 +234,6 @@ class PlanerAgent(RoutedAgent):
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
 
-                Store all important information in the file planer_state.json and use them to recover the state in case of failure.
-
                 """,
 
 
@@ -245,36 +247,58 @@ class PlanerAgent(RoutedAgent):
 
         ]
 
+    async def process_plan(self, message: str):
+        self._chat_history.append(UserMessage(content=f"**user message**:\n{message}", source="user"))
 
+        status = "TIMEOUT"
+
+        while True:
+
+            result = await self._model_client.create(self._chat_history)
+            print(f"\n{'-'*80}\nPlaner ({self._id}):\n{result.content}", flush=True)
+            self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
+
+            if "TERMINATE" in result.content:
+                status = "COMPLETE"
+                break
+            
+            # find the first line starts with 'TASK:'
+            lines = result.content.split("\n")
+            tasks = [line for line in lines if line.startswith("TASK:")]
+            if len(tasks) == 0:
+                self._chat_history.append(SystemMessage(content=f"**system message**:\nNO TASK FOUND\nPlease assign a task OR terminate.", ))
+                continue
+
+            first_task = next(iter([line for line in lines if line.startswith("TASK:")]), None)
+
+            if "TASK" in first_task:
+                task_rgex = r"^TASK: (?P<task_id>\w+), (?P<task_description>.+)"
+                match = re.match(task_rgex, first_task)
+                task_id, task_description = match.groups()
+                agent_id = f"{self._id} -> T:{task_id}"
+
+            # get a new agent for each task
+            task_handler_agent = AgentId(self._task_handler_agent_type, agent_id)
+
+            task_result = await self.send_message(Task(content=result.content), task_handler_agent)
+            self._chat_history.append(AssistantMessage(content=task_result.results, source="task_handler"))
+
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
+        return result.content
 
 
     @message_handler
     async def handle_message(self, message: UserAssignment, ctx: MessageContext) -> None:
-        print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
-        self._chat_history.append(UserMessage(content=f"**user message**:\n{message.content}", source="user"))
-
-        # # load the planer state from the file
-        # output = await self.send_message(Message(content="Load the planer state from the file."), self._planer_status_agent)
-        # self._chat_history.append(AssistantMessage(content=output.content, source="storage"))
-
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlaner  ({self._id}):\n{result.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
-
-        await self.publish_message(Task(content=result.content), DefaultTopicId())
+        print(f"\n{'-'*80}\nUser assignment:\n{message.content}", flush=True)
+        await self.process_plan(message.content)
 
 
     @message_handler
-    async def handle_taskresult(self, message: TaskResults, ctx: MessageContext) -> None:
-        # print(f"\n{'-'*80}\nTask Results:\n{message.results}", flush=True)
-        self._chat_history.append(AssistantMessage(content=message.results, source="task_handler"))
-
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlaner  ({self._id}):\n{result.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=result.content, source="planner"))
-
-        if "TERMINATE" not in result.content:
-            await self.publish_message(Task(content=result.content), DefaultTopicId())
+    async def handle_task(self, message: Assignment, ctx: MessageContext) -> AssignmentResults:
+        print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
+        return AssignmentResults(results = await self.process_plan(message.content))
 
 
 @default_subscription
@@ -300,26 +324,26 @@ class TaskHandlerAgent(RoutedAgent):
                 You are a task handler agent. You are responsible for assigning tasks to specific agents based assigned task and chat history.
                 'TASK: <agent_id>, <task_id>, <task_description>'
 """ f"""
-                You have three team members:
-                    Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on local linux environment (bash, pwsh, python, ls, git, curl, etc.).
-                    Search agent (id: {search_agent_type.type}): Only to searches information on Google website.
-                    Planer agent: (id: {planar_agent_type.type}): Breaks down complex tasks into smaller tasks and assigns them to further agents.
+                You have following agents available:
+                    - Assistant agent (id: {assistant_agent_type.type}): Creates and executes scripts on linux consol with internet access (bash, pwsh, python, ls, git, curl, etc.). Versatile in capabilities.
+                    - Search agent (id: {search_agent_type.type}): Only able to search information on Google not able to download files. Really limited in capabilities.
+                    - Planer agent: (id: {planar_agent_type.type}): Breaks down complex tasks into smaller tasks and assigns them to further agents. Really expensive to use.
 
 """ """
-                Your job is to prepare a single task and assign to one agents.
-                Team members have no access to chat history. So, provide all related context
-                and details for them based on chat history.
+                Your job is to prepare a single task based on the chat history and assign it to the specific agent.
+                The task should be assigned to the agent that is most suitable for the task.
+                The agents are only able to communicate with you and not aware of each other and not aware of the chat history.
 
-                Output a single task you intend to assign as follows:
-                'TASK: <agent_id>, <task_id>, <task description>, <context and details>, <required output>'
+                Output a single task you intend to assign to an agent in the following format:
+                'TASK: <agent_id>, <task_id>, Todo: <task description>, Background: <context and details>, Output: <required output>'
 
                 In case the selected agent fails, repeat the task with more information or you can try to assign to another agent.
-                If the task is too complex assign it to the planer agent.
+                If the task is too complex, try to assign it to the planer agent. If the planer agent is too busy, try to assign it to the assistant agent.
                 
                 Output 'FAILURE' if the task is repeatedly not completed.
                 Output 'SUCCESS' if the task is completed successfully.
-                Output 'SUMMARY' on 'SUCCESS' or 'FAILURE' with the summary of the task as follows:
-                'SUMMARY: <specific agent>, <summary of the task>, <summary of the script output>'
+                Output 'SUMMARY' on 'SUCCESS' and on 'FAILURE' with the summary of the task result as follows:
+                'SUMMARY: Agent: <specific agent>, Summary: <summary of the task>, Output: <summary of the script output>'
                 Output 'OUTPUT' on 'SUCCESS' with the detailed output of the task as follows:
                 'OUTPUT:
                 ```<format>
@@ -337,7 +361,9 @@ class TaskHandlerAgent(RoutedAgent):
             )    
         ]
 
-    async def proces_task(self):
+    async def process_task(self, message: str):
+        self._chat_history.append(AssistantMessage(content=message, source="user"))
+
         while True:
             result = await self._model_client.create(self._chat_history)
             print(f"\n{'-'*80}\nTask Handler ({self._id}):\n{result.content}", flush=True)
@@ -357,6 +383,7 @@ class TaskHandlerAgent(RoutedAgent):
                 task_rgex = r".*TASK: (\w+), (\w+), (.+)" 
                 if re.match(task_rgex, message):
                     agent_id, task_id, task_description = re.match(task_rgex, message).groups()
+
                     # In case agent_id is 'similar' to search_agent_type, send the task to the search agent.
                     if agent_id == self._search_agent_type.type:
                         agent_id = f"{self._id} -> T:{task_id} -> Search"
@@ -375,12 +402,18 @@ class TaskHandlerAgent(RoutedAgent):
                                     "message": Assignment(content=task_description)})
                     # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
                     elif agent_id == self._planar_agent_type.type:
-                        agent_id= f"{self._id} -> T:{task_id} -> Planer"
-                        recipient = AgentId(self._planar_agent_type, agent_id)
-                        tasks.append({"recipient": recipient, "task_id": task_id, 
-                                    "task_description": task_description,
-                                    "agent_id": agent_id,
-                                    "message": UserAssignment(content=task_description)})
+                        # reduce chance to send the task to the planer agent in case we already have a lot of planers
+                        if random.random() < (100 / len(self._id)):
+                            agent_id= f"{self._id} -> T:{task_id} -> Planer"
+                            recipient = AgentId(self._planar_agent_type, agent_id)
+                            tasks.append({"recipient": recipient, "task_id": task_id, 
+                                        "task_description": task_description,
+                                        "agent_id": agent_id,
+                                        "message": Assignment(content=task_description)})
+                        else:
+                            self._chat_history.append(AssistantMessage(content="Could not assign the task to the planer agent. Too busy."), source="planer_agent")
+
+
                     else:
                         raise ValueError(f"Unknown agent_id: {agent_id}")
 
@@ -412,20 +445,19 @@ class TaskHandlerAgent(RoutedAgent):
                     print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
                     self._chat_history.append(AssistantMessage(content=content, source=agent))
 
-            else:
-                break
-
-
-        return await self.publish_message(
-            TaskResults(results="No more task was fount."), DefaultTopicId())
+            # else:
+            #     break
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
+        return result.content
         
 
     @message_handler
-    async def handle_task(self, message: Task, ctx: MessageContext) -> None:
+    async def handle_task(self, message: Task, ctx: MessageContext) -> TaskResults:
         # print(f"\n{'-'*80}\nTask:\n{message.content}", flush=True)
-        self._chat_history.append(AssistantMessage(content=message.content, source="task_handler"))
 
-        await self.proces_task()
+        return TaskResults(results = await self.process_task(message.content))
 
 @default_subscription
 class Assistant(RoutedAgent):
@@ -440,20 +472,21 @@ class Assistant(RoutedAgent):
             SystemMessage(
                 content="""
 You are a coding assistant agent.
-Your job is to create script (bash, pwsh script or python code) to work on the assigned task and then provide final report on the given task.
+Your job is to create script (bash, pwsh script or python code) to work on the assigned task or create the final report.
 
+You work on the task, while you output code block.
 You only have an interactive chat with an executor agent with a local linux environment.
-The executor agent has the current directory as workspace.
-In case exact facts are not available, you can return FAILURE and ask for more information.
+The executor agent has the current directory as workspace. It will output the first 200 lines of the script output.
+In case exact facts are not available, you should return FAILURE and ask for more information.
 
 
-
-# Working on the task (first phase):
+# Working on the task (ASSIGNMENT, EXECUTOR):
 
 Use the following rules to create script and work the task:
 - Provide only a single output of maximum 200 lines.
-- Add logging (print or echo) and try-except block to track and debug the script.
+- Log to console (print or echo) and add try-except block to track and debug the script.
 - Use '<msg> Done', '<msg> Failed', 'Error: <msg>' tracking messages to indicate the completion of the task.
+- Use f"Success: <msg with formatted outputs>" tracking message to indicate the success run of the script.
 - Always save figures to file. Do not use show() or display() commands.
 - Output markdown script (bash, pwsh or python) to create a file and execute it as follows:
 ```<language>
@@ -461,8 +494,9 @@ Use the following rules to create script and work the task:
 # description: <description of the script>
 # usage: <usage of the script>
 <code>
+```
 
-# Final report (second phase):
+# Final report (final phase, TERMINATING):
 
 Use the following rules and keywords only to report your final results, do not use them in the script:
 - Output 'SUCCESS: <name of the script>, <description of the script> <usage of the script>' if executor was successful and the task is completed.
@@ -487,24 +521,40 @@ Use the following rules and keywords only to report your final results, do not u
 
     @message_handler
     async def handle_task(self, message: Assignment, ctx: MessageContext) -> AssignmentResults:
-        session: List[LLMMessage] = [
-            self._chat_history[0],
-            UserMessage(content=message.content, source="user")
-        ]
-        result = await self._model_client.create(session)
-        print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
-        session.append(AssistantMessage(content=result.content, source="assistant"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nASSIGNMENT\n{message.content}", source="user"))
 
-        for i in range(5):
-            message = await self.send_message(CommandMessage(command=result.content), self._tool_agent)
-            session.append(AssistantMessage(content=message.output, source="executor"))
+        trys: int = 8
 
-            result = await self._model_client.create(session)
+        status = "TIMEOUT"
+
+        while trys > 0:
+
+            self._chat_history.append(UserMessage(content=f"**user message**:\nRETRY COUNTS: {trys}", source="user"))
+
+            result = await self._model_client.create(self._chat_history)
             print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
-            if "SUCCESS" in result.content or "FAILURE" in result.content:
-                return AssignmentResults(results=result.content)
+            self._chat_history.append(AssistantMessage(content=result.content, source="assistant"))
 
-        return AssignmentResults(results="The task is not completed. Please provide more information.")
+            if "SUCCESS" in result.content:
+                status = "SUCCESS"
+                break
+            if "FAILURE" in result.content:
+                status = "FAILURE"
+                break
+
+            message = await self.send_message(CommandMessage(command=result.content), self._tool_agent)
+            self._chat_history.append(AssistantMessage(content=f"EXECUTOR\n{message.output}", source="executor"))
+
+            if "Success" in message.output:
+                status = "SUCCESS"
+                break
+
+            trys -= 1
+
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        result = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
+        return AssignmentResults(results = result.content)
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
     # pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")
@@ -531,6 +581,15 @@ class Executor(RoutedAgent):
             result = await self._code_executor.execute_code_blocks(
                 code_blocks, cancellation_token=ctx.cancellation_token
             )
+            # truncate the output to 200 lines
+            lines = result.output.split("\n")
+            result.output = "\n".join(lines[:200])
+
+            if len(lines) > 200:
+                # add a message to indicate the output is truncated
+                result.output += "\n{'-'*50}\nOutput truncated to 200 lines."
+
+
             print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
             return CommandResponse(output=result.output)
         return CommandResponse(output="No code blocks found in the message.")
@@ -773,6 +832,7 @@ async def main() -> None:
             lambda: PlanerAgent(
                 description="A planner agent", 
                 model_client=model_client,
+                task_handler_agent_type=task_handler_agent
                 # planer_status_agent_type=planer_status_agent,
                 # search_agent_type=search_agent,
                 # assistant_agent_type=assistant_agent
@@ -895,21 +955,49 @@ async def main() -> None:
             await runtime.publish_message(
                 UserAssignment( \
 """
+
+The following description is somewhat wage and needs some creativity to figure out how to finish it.
+
+Complex task:
+Output the top five lines (`head -n 5`) of the *.py, *.sh files to console to be aware of the folder content using bash script
+    - Only keep the filename description and usage of important files/scripts.
+
+
 Download the following script: url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
 
-Extract planer agent to planer_agent.py and planer_agent.json from ext_coding.py
-Extract task handler agent to task_handler_agent.py and task_handler_agent.json from ext_coding.py
-Extract search agent to search_agent.py and search_agent.json from ext_coding.py
-Extract assistant agent to assistant_agent.py and assistant_agent.json from ext_coding.py
-Extract executor agent to executor_agent.py and executor_agent.json from ext_coding.py
-Create a sceptic agent to raise doubts about the progress of the current task to sceptic_agent.py and sceptic_agent.json.
+Complex task:
+Create a python script that to extract agents and related imports and functions to a separate file.
+    - Create a schema.json that contains source code information of related code sections.
+    - Create a <name>_agent.py that contains the extracted agent code.
+    - Create a <name>_agent.json that contains data related to the agent, like system messages. 
+    - Use ast module to extract the class information and redbaron to refactor the code. 
+    - Libraries are already installed in the environment.
+    - Agent descriptions and 'system messages' text should be extracted to the json files and loaded from agent __init__.
 
-Extract single threaded agent runtime to agent_runtime.py and agent_runtime.json from ext_coding.py
 
-Use ast module to extract the class information and redbaron to refactor the code. Libraries are already installed in the environment.
+Use the extract script to extract the following agents to separate files:
+- 'planer agent' to planer_agent.py and planer_agent.json
+- 'task handler agent' to task_handler_agent.py and task_handler_agent.json
+- 'search agent' to search_agent.py and search_agent.json
+- 'assistant agent' to assistant_agent.py and assistant_agent.json
+- 'executor agent' to executor_agent.py and executor_agent.json
 
-Agent descriptions and system messages should be extracted to the json files and loaded from agent __init__.
+
+Extract single threaded agent runtime to agent_runtime.py from ext_coding.py
+
+Before you create the extractor code, you need to understand the structure of the code and dependencies.
+
+Complex tasks:
+Do some experimentation the ast and redbaron libraries to understand how to extract the class information and refactor the code.
+Create some tools to use the ast and redbaron libraries to extract the class information.
+Analyze the code and dependencies to understand the structure of the code and dependencies.
+
+
 The extracted code should contain the required imports.
+
+The agent names might not be easy to spot in the code. It might camel case or snake case or misspelled.
+
+Check the output of the `git status` command to see if the files are changed according to the task.
 
 """), 
                 DefaultTopicId()

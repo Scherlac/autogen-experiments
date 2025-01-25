@@ -264,18 +264,18 @@ class PlanerAgent(RoutedAgent):
             
             # find the first line starts with 'TASK:'
             lines = result.content.split("\n")
-            tasks = [line for line in lines if line.startswith("TASK:")]
+            task_rgex = r"^[- \t]*TASK: (?P<task_id>\w+), (?P<task_description>.+)"
+            tasks = [line for line in lines if re.match(task_rgex, line)]
+            
             if len(tasks) == 0:
                 self._chat_history.append(SystemMessage(content=f"**system message**:\nNO TASK FOUND\nPlease assign a task OR terminate.", ))
                 continue
 
-            first_task = next(iter([line for line in lines if line.startswith("TASK:")]), None)
+            first_task = next(iter(tasks))
 
-            if "TASK" in first_task:
-                task_rgex = r"^TASK: (?P<task_id>\w+), (?P<task_description>.+)"
-                match = re.match(task_rgex, first_task)
-                task_id, task_description = match.groups()
-                agent_id = f"{self._id} -> T:{task_id}"
+            match = re.match(task_rgex, first_task)
+            task_id, task_description = match.groups()
+            agent_id = f"{self._id} -> T:{task_id}"
 
             # get a new agent for each task
             task_handler_agent = AgentId(self._task_handler_agent_type, agent_id)
@@ -335,7 +335,7 @@ class TaskHandlerAgent(RoutedAgent):
                 The agents are only able to communicate with you and not aware of each other and not aware of the chat history.
 
                 Output a single task you intend to assign to an agent in the following format:
-                'TASK: <agent_id>, <task_id>, Todo: <task description>, Background: <context and details>, Output: <required output>'
+                'TASK: <agent_id>, <task_id>, Todo: <task description>, Data: <parameters, data, url, etc.>, Background: <context and details>, Output: <ask to output the required information and the proof of completion>'
 
                 In case the selected agent fails, repeat the task with more information or you can try to assign to another agent.
                 If the task is too complex, try to assign it to the planer agent. If the planer agent is too busy, try to assign it to the assistant agent.
@@ -374,7 +374,8 @@ class TaskHandlerAgent(RoutedAgent):
             
             if "SUCCESS" in result.content or \
                 "FAILURE" in result.content:
-                return await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
+                break
+                #return await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
 
 
             tasks = []
@@ -403,7 +404,7 @@ class TaskHandlerAgent(RoutedAgent):
                     # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
                     elif agent_id == self._planar_agent_type.type:
                         # reduce chance to send the task to the planer agent in case we already have a lot of planers
-                        if random.random() < (100 / len(self._id)):
+                        if random.random() < (100 / len(str(self._id))):
                             agent_id= f"{self._id} -> T:{task_id} -> Planer"
                             recipient = AgentId(self._planar_agent_type, agent_id)
                             tasks.append({"recipient": recipient, "task_id": task_id, 
@@ -451,7 +452,7 @@ class TaskHandlerAgent(RoutedAgent):
         result = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
         return result.content
-        
+
 
     @message_handler
     async def handle_task(self, message: Task, ctx: MessageContext) -> TaskResults:
@@ -474,7 +475,7 @@ class Assistant(RoutedAgent):
 You are a coding assistant agent.
 Your job is to create script (bash, pwsh script or python code) to work on the assigned task or create the final report.
 
-You work on the task, while you output code block.
+You work on the task, while you output code block. The system may limit the attempts to complete the task (RETRY COUNTS).
 You only have an interactive chat with an executor agent with a local linux environment.
 The executor agent has the current directory as workspace. It will output the first 200 lines of the script output.
 In case exact facts are not available, you should return FAILURE and ask for more information.
@@ -529,7 +530,7 @@ Use the following rules and keywords only to report your final results, do not u
 
         while trys > 0:
 
-            self._chat_history.append(UserMessage(content=f"**user message**:\nRETRY COUNTS: {trys}", source="user"))
+            self._chat_history.append(SystemMessage(content=f"**system message**:\nRETRY COUNTS: {trys}"))
 
             result = await self._model_client.create(self._chat_history)
             print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
@@ -963,7 +964,7 @@ Output the top five lines (`head -n 5`) of the *.py, *.sh files to console to be
     - Only keep the filename description and usage of important files/scripts.
 
 
-Download the following script: url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+Download the following script: ext_coding_url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
 
 Complex task:
 Create a python script that to extract agents and related imports and functions to a separate file.

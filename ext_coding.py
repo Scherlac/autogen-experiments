@@ -426,7 +426,8 @@ class TaskHandlerAgent(RoutedAgent):
                                         "agent": "planer_agent",
                                         "message": Assignment(content=task_description)})
                         else:
-                            self._chat_history.append(AssistantMessage(content="Could not assign the task to the planer agent. Too busy."), source="planer_agent")
+                            self._chat_history.append(AssistantMessage(content="Could not assign the task to the planer agent. Too busy.", source="planer_agent"))
+                            print(f"\n{'-'*80}\nTask Handler ({self._id}) - Planer agent too busy.", flush=True)
 
 
                     else:
@@ -573,7 +574,7 @@ Use the following rules and keywords only to report your final results, do not u
 
 
         # self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current assignment, pay attention to include all important details.", source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTermination with status {status} accepted.\nPlease summarize our discussion, focusing on the current assignment, pay attention to include all important details.", source="user"))
 
         report = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nAssistant ({self._id}) - Final report:\n{result.content}", flush=True)
@@ -601,20 +602,24 @@ class Executor(RoutedAgent):
     async def handle_command_message(self, message: CommandMessage, ctx: MessageContext) -> CommandResponse:
         code_blocks = extract_markdown_code_blocks(message.command)
         if code_blocks:
-            result = await self._code_executor.execute_code_blocks(
-                code_blocks, cancellation_token=ctx.cancellation_token
-            )
-            # truncate the output to 200 lines
-            lines = result.output.split("\n")
-            result.output = "\n".join(lines[:200])
+            try:
+                result = await self._code_executor.execute_code_blocks(
+                    code_blocks, cancellation_token=ctx.cancellation_token
+                )
+                # truncate the output to 200 lines
+                lines = result.output.split("\n")
+                result.output = "\n".join(lines[:200])
 
-            if len(lines) > 200:
-                # add a message to indicate the output is truncated
-                result.output += "\n{'-'*50}\nOutput truncated to 200 lines."
+                if len(lines) > 200:
+                    # add a message to indicate the output is truncated
+                    result.output += "\n{'-'*50}\nOutput truncated to 200 lines."
 
 
-            print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
-            return CommandResponse(output=result.output)
+                print(f"\n{'-'*80}\nExecutor:\n{result.output}", flush=True)
+                return CommandResponse(output=result.output)
+            except Exception as e:
+                print(f"\n{'-'*80}\nExecutor:\nExecution error: {str(e)}", flush=True)
+                return CommandResponse(output=f"Execution error: {str(e)}")
         return CommandResponse(output="No code blocks found in the message.")
 
 

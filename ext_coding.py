@@ -194,11 +194,11 @@ class PlanerAgent(RoutedAgent):
                 - continue with previously created plans
                 - update the plan as needed
                 - create a plan to break down complex tasks into smaller tasks
-                - assign the tasks to team members
+                - assign the tasks to agents
 
 """ f"""
-                Your team members are:
-                    Task handler agent: Assigns tasks to the specific agents.
+                Your have following agents available:
+                    Task handler agent (id: {task_handler_agent_type.type}): Assigns tasks to the specific agents. 
 """ """
 
                 List the original assignment as follows:
@@ -288,21 +288,21 @@ class PlanerAgent(RoutedAgent):
             self._chat_history.append(AssistantMessage(content=task_result.results, source="task_handler"))
 
         self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
-        return result.content
+        report = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nPlaner ({self._id}) - Final report:\n{result.content}", flush=True)
+        return AssignmentResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 
     @message_handler
     async def handle_message(self, message: UserAssignment, ctx: MessageContext) -> None:
-        print(f"\n{'-'*80}\nUser assignment:\n{message.content}", flush=True)
+        print(f"\n{'-'*80}\nPlaner ({self._id}) - User assignment:\n{message.content}", flush=True)
         await self.process_plan(message.content)
 
 
     @message_handler
     async def handle_task(self, message: Assignment, ctx: MessageContext) -> AssignmentResults:
-        print(f"\n{'-'*80}\nAssignment:\n{message.content}", flush=True)
-        return AssignmentResults(results = await self.process_plan(message.content))
+        print(f"\n{'-'*80}\nPlaner ({self._id}) - Assignment:\n{message.content}", flush=True)
+        return await self.process_plan(message.content)
 
 
 @default_subscription
@@ -403,6 +403,7 @@ class TaskHandlerAgent(RoutedAgent):
                         tasks.append({"recipient": recipient, "task_id": task_id, 
                                     "task_description": task_description,
                                     "agent_id": agent_id,
+                                    "agent": "search_agent",
                                     "message": Search(query=task_description)})
                     # In case agent_id is 'similar' to assistant_agent_type, send the task to the assistant agent.
                     elif agent_id == self._assistant_agent_type.type:
@@ -411,6 +412,7 @@ class TaskHandlerAgent(RoutedAgent):
                         tasks.append({"recipient": recipient, "task_id": task_id, 
                                     "task_description": task_description,
                                     "agent_id": agent_id,
+                                    "agent": "assistant_agent",
                                     "message": Assignment(content=task_description)})
                     # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
                     elif agent_id == self._planar_agent_type.type:
@@ -421,6 +423,7 @@ class TaskHandlerAgent(RoutedAgent):
                             tasks.append({"recipient": recipient, "task_id": task_id, 
                                         "task_description": task_description,
                                         "agent_id": agent_id,
+                                        "agent": "planer_agent",
                                         "message": Assignment(content=task_description)})
                         else:
                             self._chat_history.append(AssistantMessage(content="Could not assign the task to the planer agent. Too busy."), source="planer_agent")
@@ -432,6 +435,7 @@ class TaskHandlerAgent(RoutedAgent):
             if len(tasks) > 0:
                 tasks = [ { 
                     "agent_id": task["agent_id"],
+                    "agent": task["agent"],
                     "task_id": task["task_id"],
                     "task_description": task["task_description"],
                     "result": self.send_message(task["message"], task["recipient"])
@@ -439,38 +443,39 @@ class TaskHandlerAgent(RoutedAgent):
                     for task in tasks]
 
                 for task in tasks:
-                    result = await task["result"]
+                    agent_result = await task["result"]
                     task.pop("result")
-                    if isinstance(result, SearchResults):
+                    if isinstance(agent_result, SearchResults):
                         agent = "search_agent"
-                        content = result.results
-                    elif isinstance(result, TaskResults):
+                        content = agent_result.results
+                    elif isinstance(agent_result, TaskResults):
 
-                        content = result.results
-                    elif isinstance(result, AssignmentResults):
+                        content = agent_result.results
+                    elif isinstance(agent_result, AssignmentResults):
                         agent = "assistant_agent"
-                        content = result.results
+                        content = agent_result.results
                     else:
-                        raise ValueError(f"Unknown result type: {result}")
+                        raise ValueError(f"Unknown result type: {agent_result}")
                     task['content'] = content
 
-                    print(f"\n{'-'*80}\n{task['agent_id']}:\n{task['task_description']}\n{content}", flush=True)
-                    self._chat_history.append(AssistantMessage(content=content, source=agent))
+                    # print(f"\n{'-'*80}\nTask Handler ({self._id})\nANSWER FROM: {task['agent_id']}:\nTASK: {task['task_description']}\nCONTENT: {content}", flush=True)
+                    self._chat_history.append(AssistantMessage(content= f"ANSWER FROM: {task['agent']}:\nCONTENT: {content}", source=task['agent']))
+                                               
 
             # else:
             #     break
 #        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
         self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
-        return result.content
+        report = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nTask Handler ({self._id}) - Final report:\n{result.content}", flush=True)
+        return TaskResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 
     @message_handler
     async def handle_task(self, message: Task, ctx: MessageContext) -> TaskResults:
         # print(f"\n{'-'*80}\nTask:\n{message.content}", flush=True)
 
-        return TaskResults(results = await self.process_task(message.content))
+        return await self.process_task(message.content)
 
 @default_subscription
 class Assistant(RoutedAgent):
@@ -485,12 +490,15 @@ class Assistant(RoutedAgent):
             SystemMessage(
                 content="""
 You are a coding assistant agent.
-Your job is to create script (bash, pwsh script or python code) to work on the assigned task or create the final report.
+Your job is to:
+- create script (bash, pwsh script or python code) to work on the assigned task or
+- process the output of the executor agent and decide on the next step eg. retry and correct the script, finish 
+- create the final report when you are done, eg. the script finishes correctly.
 
 You work on the task, while you output code block. The system may limit the attempts to complete the task (RETRY COUNTS).
 You only have an interactive chat with an executor agent with a local linux environment.
 The executor agent has the current directory as workspace. It will output the first 200 lines of the script output.
-In case exact facts are not available, you should return FAILURE and ask for more information.
+In case exact facts or  input parameters are not available, you should output 'FAILURE' and ask for more information. The executor agent will not provide parameters.
 
 
 # Working on the task (ASSIGNMENT, EXECUTOR):
@@ -509,7 +517,7 @@ Use the following rules to create script and work the task:
 <code>
 ```
 
-# Final report (final phase, TERMINATING):
+# Final report (final phase, Done, TERMINATING):
 
 Use the following rules and keywords only to report your final results, do not use them in the script:
 - Output 'SUCCESS: <name of the script>, <description of the script> <usage of the script>' if executor was successful and the task is completed.
@@ -542,10 +550,11 @@ Use the following rules and keywords only to report your final results, do not u
 
         while trys > 0:
 
-            self._chat_history.append(SystemMessage(content=f"**system message**:\nRETRY COUNTS: {trys}"))
+            # self._chat_history.append(SystemMessage(content=f"**system message**:\nRETRY COUNTS: {trys}"))
+            trys -= 1
 
             result = await self._model_client.create(self._chat_history)
-            print(f"\n{'-'*80}\nAssistant:\n{result.content}", flush=True)
+            print(f"\n{'-'*80}\nAssistant ({self._id}):\n{result.content}", flush=True)
             self._chat_history.append(AssistantMessage(content=result.content, source="assistant"))
 
             if "SUCCESS" in result.content:
@@ -556,20 +565,19 @@ Use the following rules and keywords only to report your final results, do not u
                 break
 
             message = await self.send_message(CommandMessage(command=result.content), self._tool_agent)
-            self._chat_history.append(AssistantMessage(content=f"EXECUTOR\n{message.output}", source="executor"))
+            self._chat_history.append(AssistantMessage(content=f"EXECUTOR OUTPUT\n{message.output}\n\nRETRY COUNTS: {trys}", source="executor"))
 
-            if "Success" in message.output:
-                status = "SUCCESS"
-                break
+            # if "Success" in message.output:
+            #     status = "SUCCESS"
+            #     break
 
-            trys -= 1
 
         # self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
         self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current assignment, pay attention to include all important details.", source="user"))
 
-        result = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
-        return AssignmentResults(results = result.content)
+        report = await self._model_client.create(self._chat_history)
+        print(f"\n{'-'*80}\nAssistant ({self._id}) - Final report:\n{result.content}", flush=True)
+        return AssignmentResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
     # pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")

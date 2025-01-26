@@ -189,12 +189,9 @@ class PlanerAgent(RoutedAgent):
         self._chat_history: List[LLMMessage] = [
             SystemMessage(
                 content="""
-                You are a planning agent.
-                The job is to:
-                - continue with previously created plans
-                - update the plan as needed
-                - create a plan to break down complex tasks into smaller tasks
-                - assign the tasks to agents
+                You are a planning agent. You will get an assignment.
+                You will work in multiple turns, in each turn you will manage the plan, collected information and assign tasks.
+
 
 """ f"""
                 Your have following agents available:
@@ -207,14 +204,13 @@ class PlanerAgent(RoutedAgent):
                 <original assignment>
                 ```
 
-
-                Manage **plan** to accomplish the task as follows:
+                Manage the **plan** by creating, updating, refining and following it to accomplish the task as follows:
                 ```text
                 # Plan:
                 - step <step number>: <step description>
                 ```
 
-                Manage the list of **collected information** as we progress as follows:
+                Manage the list of **collected information** by collecting topics and subtopics as we progress as follows:
                 ```text
                 # Collected Information:
 
@@ -224,19 +220,21 @@ class PlanerAgent(RoutedAgent):
                 ### <sub topic name> // Only add sub topic for data from 'user message', 'search results' or 'task results'
                 <description of the sub topic>
 
-                "usage": "<usage>", # Optional, only add if information is available
-                "file_name": "<file name>", # Optional, only add if information is available
-                "script": "<script>", # Optional, only add if information is available
-                "language": "<language>", # Optional, only add if information is available
-                "link": "<link>"  # Optional, only add if information is available
+                - usage: "<usage>", # Optional, only add if information is available
+                - file_name: "<file name>", # Optional, only add if information is available
+                - script: "<script>", # Optional, only add if information is available
+                - language: "<language>", # Optional, only add if information is available
+                - link: "<link>"  # Optional, only add if information is available
 
                 ```
 
-                Manage the **tasks** and **prioritize** them. Assign the next tasks using the following format:
+                Manage the **tasks** and **prioritize** them by output a maximum of three task at a time, eg. task id 1-3. than later id 4-6. Assign the next tasks using the following format:
                 'TASK: <agent_id>, <task_id>, Todo: <task description>, Data: <parameters, data, url, etc.>, Background: <context and details>, Output: <ask to output the required information and the proof of completion>'
- 
-                
-                After all tasks are complete, summarize the findings and end with "TERMINATE".
+                Once the selected task is completed you will get the results and you review te plan and assign the next task.
+                 
+                After all tasks are complete, review the plane, update the task. 
+
+                Output 'TERMINATE' only if no more steps or task to be processed and all results, reports and reviews are available and final report is ready to be created.
 
                 """,
 
@@ -268,7 +266,7 @@ class PlanerAgent(RoutedAgent):
             
             # find the first line starts with 'TASK:'
             lines = result.content.split("\n")
-            task_rgex = r"^[- \t]*TASK: (?P<task_id>\w+), (?P<task_description>.+)"
+            task_rgex = r"^[- \t]*TASK: (?P<agent_id>\w+), (?P<task_id>\w+), (?P<task_description>.+)"
             tasks = [line for line in lines if re.match(task_rgex, line)]
             
             if len(tasks) == 0:
@@ -278,8 +276,8 @@ class PlanerAgent(RoutedAgent):
             first_task = next(iter(tasks))
 
             match = re.match(task_rgex, first_task)
-            task_id, task_description = match.groups()
-            agent_id = f"{self._id} -> T:{task_id}"
+            agent_id, task_id, task_description = match.groups()
+            agent_id = f"{self._id} -> T:{task_id} -> Task"
 
             # get a new agent for each task
             task_handler_agent = AgentId(self._task_handler_agent_type, agent_id)
@@ -289,7 +287,7 @@ class PlanerAgent(RoutedAgent):
 
         self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
         report = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nPlaner ({self._id}) - Final report:\n{result.content}", flush=True)
+        print(f"\n{'-'*80}\nPlaner ({self._id}) - Final report:\n{report.content}", flush=True)
         return AssignmentResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 
@@ -344,17 +342,15 @@ class TaskHandlerAgent(RoutedAgent):
                 In case the selected agent fails, repeat the task with more information or you can try to assign to another agent.
                 If the task is too complex, try to assign it to the planer agent. If the planer agent is too busy, try to assign it to the assistant agent.
                 
-                Output 'FAILURE' if the task is repeatedly not completed.
-                Output 'SUCCESS' if the task is completed successfully.
-                Output 'SUMMARY' on 'SUCCESS' and on 'FAILURE' with the summary of the task result as follows:
-                'SUMMARY: Agent: <specific agent>, Summary: <summary of the task>, Output: <summary of the script output>'
+                Output 'TERMINATE' if all task are processed and the final report is ready to be created.
+                Output 'SUMMARY' on 'TERMINATE' with the summary of the task result as follows:
+                'SUMMARY: Agent: <specific agent>, Status: <status of the task>, Summary: <summary of the task>, Result: <result of the task>, Usage: <usage of the script>, Output: <summary of the script output>', Findings: <findings of the task>
                 Output 'OUTPUT' on 'SUCCESS' with the detailed output of the task as follows:
                 'OUTPUT:
                 ```<format>
                 <output>
                 ```'
 
-                Output 'TERMINATE' non of the agents is able to complete the task after multiple attempts.
 
 
                 """,
@@ -379,7 +375,7 @@ class TaskHandlerAgent(RoutedAgent):
                 status = "COMPLETE"
                 break
             
-            if "SUCCESS" in result.content:
+            if "SUCCESS" in result.content or "SUMMARY" in result.content:
                 status = "SUCCESS"
                 break
                 
@@ -417,7 +413,7 @@ class TaskHandlerAgent(RoutedAgent):
                     # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
                     elif agent_id == self._planar_agent_type.type:
                         # reduce chance to send the task to the planer agent in case we already have a lot of planers
-                        if random.random() < (100 / len(str(self._id))):
+                        if random.random() < (60 / len(str(self._id))):
                             agent_id= f"{self._id} -> T:{task_id} -> Planer"
                             recipient = AgentId(self._planar_agent_type, agent_id)
                             tasks.append({"recipient": recipient, "task_id": task_id, 
@@ -466,9 +462,9 @@ class TaskHandlerAgent(RoutedAgent):
             # else:
             #     break
 #        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTermination with status {status} accepted.\nPlease summarize all processed task and there status, results, created script, usage, outputs and findings.", source="user"))
         report = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nTask Handler ({self._id}) - Final report:\n{result.content}", flush=True)
+        print(f"\n{'-'*80}\nTask Handler ({self._id}) - Final report:\n{report.content}", flush=True)
         return TaskResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 
@@ -511,10 +507,12 @@ Use the following rules to create script and work the task:
 - Use f"Success: <msg with formatted outputs>" tracking message to indicate the success run of the script.
 - Always save figures to file. Do not use show() or display() commands.
 - Output markdown script (bash, pwsh or python) to create a file and execute it as follows:
+
 ```<language>
 # filename: <name of the script> # Optional, add only to retain the final script file for future reference.
 # description: <description of the script>
 # usage: <usage of the script>
+
 <code>
 ```
 
@@ -577,13 +575,13 @@ Use the following rules and keywords only to report your final results, do not u
         self._chat_history.append(UserMessage(content=f"**user message**:\nTermination with status {status} accepted.\nPlease summarize our discussion, focusing on the current assignment, pay attention to include all important details.", source="user"))
 
         report = await self._model_client.create(self._chat_history)
-        print(f"\n{'-'*80}\nAssistant ({self._id}) - Final report:\n{result.content}", flush=True)
+        print(f"\n{'-'*80}\nAssistant ({self._id}) - Final report:\n{report.content}", flush=True)
         return AssignmentResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
 
 def extract_markdown_code_blocks(markdown_text: str) -> List[CodeBlock]:
     # pattern = re.compile(r"```(?:\s*([\w\+\-]+))?\n([\s\S]*?)```")
     # extract the language and code content from the markdown text
-    pattern = re.compile(r"```(?P<language>[\w\+\-]+)?\n(?P<code>[\s\S]*?)```")
+    pattern = re.compile(r"```(?P<language>\n?[\w\+\-]+)?\n(?P<code>[\s\S]*?)```")
     matches = pattern.findall(markdown_text)
     code_blocks: List[CodeBlock] = []
     for match in matches:

@@ -190,14 +190,18 @@ class PlanerAgent(RoutedAgent):
             SystemMessage(
                 content="""
                 You are a planning agent.
-                The job is to continue with previously created plans or break down complex tasks into smaller tasks.
+                The job is to:
+                - continue with previously created plans
+                - update the plan as needed
+                - create a plan to break down complex tasks into smaller tasks
+                - assign the tasks to team members
 
 """ f"""
                 Your team members are:
                     Task handler agent: Assigns tasks to the specific agents.
 """ """
 
-                List the original assignment verbatim as follows:
+                List the original assignment as follows:
                 ```text
                 # Assignment:
                 <original assignment>
@@ -228,9 +232,9 @@ class PlanerAgent(RoutedAgent):
 
                 ```
 
-                Manage the **tasks** and **prioritize** them based on the plan.
-                Assign the next tasks using the following format:
-                'TASK: <task_id>, <task_description>'
+                Manage the **tasks** and **prioritize** them. Assign the next tasks using the following format:
+                'TASK: <agent_id>, <task_id>, Todo: <task description>, Data: <parameters, data, url, etc.>, Background: <context and details>, Output: <ask to output the required information and the proof of completion>'
+ 
                 
                 After all tasks are complete, summarize the findings and end with "TERMINATE".
 
@@ -283,7 +287,7 @@ class PlanerAgent(RoutedAgent):
             task_result = await self.send_message(Task(content=result.content), task_handler_agent)
             self._chat_history.append(AssistantMessage(content=task_result.results, source="task_handler"))
 
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
         result = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
         return result.content
@@ -364,16 +368,23 @@ class TaskHandlerAgent(RoutedAgent):
     async def process_task(self, message: str):
         self._chat_history.append(AssistantMessage(content=message, source="user"))
 
+        status = "TIMEOUT"
+
         while True:
             result = await self._model_client.create(self._chat_history)
             print(f"\n{'-'*80}\nTask Handler ({self._id}):\n{result.content}", flush=True)
             self._chat_history.append(AssistantMessage(content=result.content, source="task_handler"))
 
             if "TERMINATE" in result.content:
+                status = "COMPLETE"
                 break
             
-            if "SUCCESS" in result.content or \
-                "FAILURE" in result.content:
+            if "SUCCESS" in result.content:
+                status = "SUCCESS"
+                break
+                
+            if "FAILURE" in result.content:
+                status = "FAILURE"
                 break
                 #return await self.publish_message(TaskResults(results=result.content), DefaultTopicId())
 
@@ -448,7 +459,8 @@ class TaskHandlerAgent(RoutedAgent):
 
             # else:
             #     break
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+#        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
         result = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
         return result.content
@@ -552,7 +564,9 @@ Use the following rules and keywords only to report your final results, do not u
 
             trys -= 1
 
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        # self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current assignment, pay attention to include all important details.", source="user"))
+
         result = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nFinal report  ({self._id}):\n{result.content}", flush=True)
         return AssignmentResults(results = result.content)
@@ -576,7 +590,7 @@ class Executor(RoutedAgent):
         self._code_executor = code_executor
 
     @message_handler
-    async def handle_commandmessaga(self, message: CommandMessage, ctx: MessageContext) -> CommandResponse:
+    async def handle_command_message(self, message: CommandMessage, ctx: MessageContext) -> CommandResponse:
         code_blocks = extract_markdown_code_blocks(message.command)
         if code_blocks:
             result = await self._code_executor.execute_code_blocks(

@@ -250,7 +250,7 @@ class PlanerAgent(RoutedAgent):
         ]
 
     async def process_plan(self, message: str):
-        self._chat_history.append(UserMessage(content=f"**user message**:\n{message}", source="user"))
+        self._chat_history.append(UserMessage(content=f"USER MESSAGE:\n{message}", source="user"))
 
         status = "TIMEOUT"
 
@@ -283,9 +283,13 @@ class PlanerAgent(RoutedAgent):
             task_handler_agent = AgentId(self._task_handler_agent_type, agent_id)
 
             task_result = await self.send_message(Task(content=result.content), task_handler_agent)
-            self._chat_history.append(AssistantMessage(content=task_result.results, source="task_handler"))
+            self._chat_history.append(UserMessage(
+                    content=f"TASK HANDLER:\n{task_result.results}\n\nUpdate plane or select new task or terminate?", 
+                    source="task_handler"))
 
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", source="user"))
+        self._chat_history.append(UserMessage(
+                content=f"USER MESSAGE:\n\nTERMINATING ({status})\n\nPlease summarize our discussion, focus on the current task, pay attention to include all important details.", 
+                source="user"))
         report = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nPlaner ({self._id}) - Final report:\n{report.content}", flush=True)
         return AssignmentResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
@@ -456,13 +460,18 @@ class TaskHandlerAgent(RoutedAgent):
                     task['content'] = content
 
                     # print(f"\n{'-'*80}\nTask Handler ({self._id})\nANSWER FROM: {task['agent_id']}:\nTASK: {task['task_description']}\nCONTENT: {content}", flush=True)
-                    self._chat_history.append(AssistantMessage(content= f"ANSWER FROM: {task['agent']}:\nCONTENT: {content}", source=task['agent']))
+                    self._chat_history.append(UserMessage(
+                                content= f"ANSWER FROM: {task['agent']}:\nCONTENT: {content}\n\nProvide more data and try again or continue, terminate and report back to planer?",
+                                source=task['agent']
+                                ))
                                                
 
             # else:
             #     break
-#        self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTermination with status {status} accepted.\nPlease summarize all processed task and there status, results, created script, usage, outputs and findings.", source="user"))
+#        self._chat_history.append(UserMessage(content=f"USER MESSAGE:\nTERMINATING\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        self._chat_history.append(UserMessage(
+                content=f"USER MESSAGE:\nTermination with status {status} accepted.\n\nPlease summarize all processed task and there status, results, created script, usage, outputs and findings.", 
+                source="user"))
         report = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nTask Handler ({self._id}) - Final report:\n{report.content}", flush=True)
         return TaskResults(results = f"RESULT:\n{result.content}\n\nREPORT:\n{report.content}")
@@ -541,7 +550,7 @@ Use the following rules and keywords only to report your final results, do not u
 
     @message_handler
     async def handle_task(self, message: Assignment, ctx: MessageContext) -> AssignmentResults:
-        self._chat_history.append(UserMessage(content=f"**user message**:\nASSIGNMENT\n{message.content}", source="user"))
+        self._chat_history.append(UserMessage(content=f"USER MESSAGE:\nASSIGNMENT:\n{message.content}", source="user"))
 
         trys: int = 8
 
@@ -564,15 +573,17 @@ Use the following rules and keywords only to report your final results, do not u
                 break
 
             message = await self.send_message(CommandMessage(command=result.content), self._tool_agent)
-            self._chat_history.append(AssistantMessage(content=f"EXECUTOR OUTPUT\n{message.output}\n\nRETRY COUNTS: {trys}", source="executor"))
+            self._chat_history.append(UserMessage(
+                    content=f"EXECUTOR OUTPUT:\n{message.output}\n\nRemaining retry count: {trys}\n\nReview the output and refine the script or summarize and terminate.", 
+                    source="executor"))
 
             # if "Success" in message.output:
             #     status = "SUCCESS"
             #     break
 
 
-        # self._chat_history.append(UserMessage(content=f"**user message**:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
-        self._chat_history.append(UserMessage(content=f"**user message**:\nTermination with status {status} accepted.\nPlease summarize our discussion, focusing on the current assignment, pay attention to include all important details.", source="user"))
+        # self._chat_history.append(UserMessage(content=f"USER MESSAGE:\nTERMINATING ({status})\nPlease summarize our discussion, pay attention to include all important details and data related to main assignment.", source="user"))
+        self._chat_history.append(UserMessage(content=f"USER MESSAGE:\nTermination with status {status} accepted.\nPlease summarize our discussion, focusing on the current assignment, pay attention to include all important details.", source="user"))
 
         report = await self._model_client.create(self._chat_history)
         print(f"\n{'-'*80}\nAssistant ({self._id}) - Final report:\n{report.content}", flush=True)
@@ -755,6 +766,7 @@ class SearchAgent(RoutedAgent):
         assert isinstance(final_response, str)
         return SearchResults(results=final_response)
 
+# FIXME The api has been changed 
 class ToolInterventionHandler(DefaultInterventionHandler):
     async def on_send(self, message: Any, *, sender: AgentId | None, recipient: AgentId) -> Any | type[DropMessage]:
         # if isinstance(message, FunctionCall):
@@ -776,15 +788,13 @@ async def main() -> None:
         temperature=0.0,
     )            
 
-    work_dir = "/home/workspace" # tempfile.mkdtemp()
-
     # Create an local embedded runtime.
-    runtime = SingleThreadedAgentRuntime(intervention_handlers=[ToolInterventionHandler()])
+    runtime = SingleThreadedAgentRuntime() # intervention_handlers=[ToolInterventionHandler()])
 
     async with DockerCommandLineCodeExecutor(
-        image="scl2bp/local-develop:latest",
-        container_name="dev-scl2bp",
-        work_dir=work_dir,
+        image="pscrdevops210e54.azurecr.io/scl2bp/nvidia-2204:dev-latest",
+        container_name="dev-scl2bp-agent",
+        work_dir="/workspace/agent-workspace",
         stop_container=False,
         auto_remove=False,
         ) as executor:

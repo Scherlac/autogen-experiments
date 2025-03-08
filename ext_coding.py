@@ -232,7 +232,8 @@ class PlanerAgent(RoutedAgent):
                 'TASK: <agent_id>, <task_id>, Todo: <task description>, Data: <parameters, data, url, etc.>, Background: <context and details>, Output: <ask to output the required information and the proof of completion>'
                 Once the selected task is completed you will get the results and you review te plan and assign the next task.
                  
-                After all tasks are complete, review the plane, update the task. 
+                After tasks are complete, review the plane, create further task brake down and update the task if needed. 
+                Task brake down should be done by the planer agent. Task agent may request further brake down if needed.
 
                 Output 'TERMINATE' only if no more steps or task to be processed and all results, reports and reviews are available and final report is ready to be created.
 
@@ -417,7 +418,7 @@ class TaskHandlerAgent(RoutedAgent):
                     # In case agent_id is 'similar' to planar_agent_type, send the task to the planer agent.
                     elif agent_id == self._planar_agent_type.type:
                         # reduce chance to send the task to the planer agent in case we already have a lot of planers
-                        if random.random() < (60 / len(str(self._id))):
+                        if False: #random.random() < (40 / len(str(self._id))):
                             agent_id= f"{self._id} -> T:{task_id} -> Planer"
                             recipient = AgentId(self._planar_agent_type, agent_id)
                             tasks.append({"recipient": recipient, "task_id": task_id, 
@@ -426,7 +427,7 @@ class TaskHandlerAgent(RoutedAgent):
                                         "agent": "planer_agent",
                                         "message": Assignment(content=task_description)})
                         else:
-                            self._chat_history.append(AssistantMessage(content="Could not assign the task to the planer agent. Too busy.", source="planer_agent"))
+                            self._chat_history.append(UserMessage(content="Instead of starting new sub project please terminate and report back to main planer and request further task breakdown on this task.", source="planer_agent"))
                             print(f"\n{'-'*80}\nTask Handler ({self._id}) - Planer agent too busy.", flush=True)
 
 
@@ -655,6 +656,7 @@ def google_search(query: str, num_results: int = 2, max_chars: int = 500) -> lis
     from bs4 import BeautifulSoup
 
     api_key = os.getenv("GOOGLE_API_KEY")
+    # SRC: https://programmablesearchengine.google.com/controlpanel/all
     search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 
     if not api_key or not search_engine_id:
@@ -763,6 +765,7 @@ class SearchAgent(RoutedAgent):
         )
         # Extract the final response from the output messages.
         final_response = output_messages[-1].content
+        print(f"\n{'-'*80}\nSearch Agent ({self._id}):\n{final_response}", flush=True)
         assert isinstance(final_response, str)
         return SearchResults(results=final_response)
 
@@ -984,6 +987,51 @@ async def main() -> None:
 # Download the following script: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
 # Review the code and make a plan to refactor the code.
 
+# The following description is somewhat wage and needs some creativity to figure out how to finish it.
+
+# Complex task:
+# Output the top five lines (`head -n 5`) of the *.py, *.sh files to console to be aware of the folder content using bash script
+#     - Only keep the filename description and usage of important files/scripts.
+
+
+# Download the following script: ext_coding_url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+
+# Complex task:
+# Create a python script that to extract agents and related imports and functions to a separate file.
+#     - Create a schema.json that contains source code information of related code sections.
+#     - Create a <name>_agent.py that contains the extracted agent code.
+#     - Create a <name>_agent.json that contains data related to the agent, like system messages. 
+#     - Use ast module to extract the class information and redbaron to refactor the code. 
+#     - Libraries are already installed in the environment.
+#     - Agent descriptions and 'system messages' text should be extracted to the json files and loaded from agent __init__.
+
+
+# Use the extract script to extract the following agents to separate files:
+# - 'planer agent' to planer_agent.py and planer_agent.json
+# - 'task handler agent' to task_handler_agent.py and task_handler_agent.json
+# - 'search agent' to search_agent.py and search_agent.json
+# - 'assistant agent' to assistant_agent.py and assistant_agent.json
+# - 'executor agent' to executor_agent.py and executor_agent.json
+
+
+# Extract single threaded agent runtime to agent_runtime.py from ext_coding.py
+
+# Before you create the extractor code, you need to understand the structure of the code and dependencies.
+
+# Complex tasks:
+# Do some experimentation the ast and redbaron libraries to understand how to extract the class information and refactor the code.
+# Create some tools to use the ast and redbaron libraries to extract the class information.
+# Analyze the code and dependencies to understand the structure of the code and dependencies.
+
+
+# The extracted code should contain the required imports.
+
+# The agent names might not be easy to spot in the code. It might camel case or snake case or misspelled.
+
+# Check the output of the `git status` command to see if the files are changed according to the task.
+
+
+
 # """), 
 #                 DefaultTopicId()
 #             )
@@ -992,48 +1040,43 @@ async def main() -> None:
                 UserAssignment( \
 """
 
-The following description is somewhat wage and needs some creativity to figure out how to finish it.
+# Summary of Previous Task:
 
-Complex task:
-Output the top five lines (`head -n 5`) of the *.py, *.sh files to console to be aware of the folder content using bash script
-    - Only keep the filename description and usage of important files/scripts.
+## Task Overview
+The primary task was to determine how to query Visual Studio Code (VS Code) using UNIX socket connections and to understand the purpose of those sockets.
 
+## Steps Taken
+1. **Initial Research**: The task began with executing commands to identify running processes related to VS Code and the ports they were using. This included the `ps aux`, `ss -a --unix -p`, and `netstat -aenpx` commands.
+2. **Findings**: It was confirmed that Visual Studio Code was running on the local machine, and several UNIX socket connections were identified, which are utilized by VS Code for various operations.
 
-Download the following script: ext_coding_url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
+## Key Findings
+- **UNIX Socket Connections Identified**:
+  - `/tmp/vscode-remote-containers-ipc-19173b3a-fdbb-4f43-8971-7bab47795c59.sock`: IPC for remote containers.
+  - `/tmp/vscode-ipc-91664a04-6b47-4607-ba1b-15be32397d2c.sock`: General IPC within VS Code.
+  - `/tmp/vscode-git-8743d884f6.sock`: Associated with Git operations.
+  - `/tmp/vscode-ipc-92e2ba10-075e-45e4-a0b2-7ca90b0609c3.sock`: IPC for internal components.
+  - `/tmp/vscode-remote-containers-ipc-764c1760-9c3b-47fe-ae96-209fddda50fd.sock`: Another IPC for remote containers.
+  - `/tmp/vscode-ipc-7e57ba78-bb1e-4f54-a6cc-54b1201fa242.sock`: IPC for extensions and internal services.
 
-Complex task:
-Create a python script that to extract agents and related imports and functions to a separate file.
-    - Create a schema.json that contains source code information of related code sections.
-    - Create a <name>_agent.py that contains the extracted agent code.
-    - Create a <name>_agent.json that contains data related to the agent, like system messages. 
-    - Use ast module to extract the class information and redbaron to refactor the code. 
-    - Libraries are already installed in the environment.
-    - Agent descriptions and 'system messages' text should be extracted to the json files and loaded from agent __init__.
+## Methods to Query VS Code using UNIX Sockets
+- Remote Development Tips from the official documentation.
+- Extensions like Socket.io client for VSCode.
+- Information on UNIX domain sockets for inter-process communication.
+- VS Code Extension API for creating custom solutions.
+- Discussions on common socket issues on platforms like Stack Overflow.
 
+## Conclusion
+The task was successfully completed, providing a comprehensive overview of how to query Visual Studio Code using UNIX socket connections and detailing the purpose of each identified socket. This information is crucial for troubleshooting and optimizing the performance of Visual Studio Code, especially in remote development and version control scenarios.
 
-Use the extract script to extract the following agents to separate files:
-- 'planer agent' to planer_agent.py and planer_agent.json
-- 'task handler agent' to task_handler_agent.py and task_handler_agent.json
-- 'search agent' to search_agent.py and search_agent.json
-- 'assistant agent' to assistant_agent.py and assistant_agent.json
-- 'executor agent' to executor_agent.py and executor_agent.json
+The task has been terminated as all objectives were met, and the findings were compiled into a final report.
 
+----
 
-Extract single threaded agent runtime to agent_runtime.py from ext_coding.py
+# New Task:
 
-Before you create the extractor code, you need to understand the structure of the code and dependencies.
+[Language Server Extension Guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide)
 
-Complex tasks:
-Do some experimentation the ast and redbaron libraries to understand how to extract the class information and refactor the code.
-Create some tools to use the ast and redbaron libraries to extract the class information.
-Analyze the code and dependencies to understand the structure of the code and dependencies.
-
-
-The extracted code should contain the required imports.
-
-The agent names might not be easy to spot in the code. It might camel case or snake case or misspelled.
-
-Check the output of the `git status` command to see if the files are changed according to the task.
+How to make connection to the language server using UNIX socket connections on local machine?
 
 """), 
                 DefaultTopicId()

@@ -76,4 +76,6 @@ dependencies:
       - urllib3==2.3.0
       - wrapt==1.17.2
       - zipp==3.21.0
+      - markitdown==0.0.2
+      - aiofiles==24.1.0
 prefix: /workspace/autogen-experiments/.conda

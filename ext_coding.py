@@ -42,6 +42,11 @@ from autogen_core.tools import (
     Tool,
     ToolSchema
 )
+from autogen_ext.teams.magentic_one import MagenticOne
+
+    
+
+
 from autogen_core.tool_agent import (
     ToolAgent, 
     ToolException, 
@@ -781,8 +786,17 @@ class ToolInterventionHandler(DefaultInterventionHandler):
         #         raise ToolException(content="User denied tool execution.", call_id=message.id)
         return message
 
+class MyMagentic(MagenticOne):
+    
+    async def register_agents(self, reg_fn):
+        return reg_fn(self._runtime)
+        
+
 
 async def main() -> None:
+
+
+
     model_client=AzureOpenAIChatCompletionClient(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT_URL"),
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
@@ -791,8 +805,6 @@ async def main() -> None:
         temperature=0.0,
     )            
 
-    # Create an local embedded runtime.
-    runtime = SingleThreadedAgentRuntime() # intervention_handlers=[ToolInterventionHandler()])
 
     async with DockerCommandLineCodeExecutor(
         image="pscrdevops210e54.azurecr.io/scl2bp/nvidia-2204:dev-latest",
@@ -803,18 +815,26 @@ async def main() -> None:
         ) as executor:
 
 
+        from autogen_ext.teams.magentic_one import MagenticOne
+
+        m1 = MyMagentic(client=model_client,
+                code_executor=executor,
+                hil_mode=True,
+                        )
+
+
         # Register search tool agent.
-        search_tool_agent = await ToolAgent.register(
+        search_tool_agent = await m1.register_agents(lambda runtime : ToolAgent.register(
             runtime,
             "search_tool_agent",
             lambda: ToolAgent(
                 description="Search Tool Agent",
                 tools=[google_search_tool],
             ),
-        )
+        ) )
 
         # Register search agent.
-        search_agent = await SearchAgent.register(
+        search_agent = await m1.register_agents(lambda runtime : SearchAgent.register(
             runtime,
             "search_agent",
             lambda: SearchAgent(
@@ -824,17 +844,17 @@ async def main() -> None:
                 tool_agent_type=search_tool_agent
                 
             ),
-        )
+        ))
 
         # Register executor tool agent.
-        executor_tool_agent = await Executor.register(
+        executor_tool_agent = await m1.register_agents(lambda runtime : Executor.register(
             runtime, "executor", 
             lambda: Executor(executor)
-        )
+        ) )
 
         # Register the assistant and executor agents by providing
         # their agent types, the factory functions for creating instance and subscriptions.
-        assistant_agent = await Assistant.register(
+        assistant_agent = await m1.register_agents(lambda runtime : Assistant.register(
             runtime,
             "assistant_agent",
             lambda: Assistant(
@@ -842,7 +862,7 @@ async def main() -> None:
                 model_client=model_client,
                 tool_agent_type=executor_tool_agent
             ),
-        )
+        ) )
 
         # planer_tool_agent = await ToolAgent.register(
         #     runtime,
@@ -865,7 +885,7 @@ async def main() -> None:
         # )
 
 
-        planer_agent = await PlanerAgent.register(
+        planer_agent = await m1.register_agents(lambda runtime : PlanerAgent.register(
             runtime,
             "planner",
             lambda: PlanerAgent(
@@ -877,9 +897,9 @@ async def main() -> None:
                 # assistant_agent_type=assistant_agent
                 
             )
-        )
+        ) )
 
-        task_handler_agent = await TaskHandlerAgent.register(
+        task_handler_agent = await m1.register_agents(lambda runtime : TaskHandlerAgent.register(
             runtime,
             "task_handler",
             lambda: TaskHandlerAgent(
@@ -891,153 +911,12 @@ async def main() -> None:
 
             )
         )
-
+        )
         # The output is written in a file named as this script file with date and time appended to it with .txt extension.
         filename = os.path.basename(__file__).replace(".py", f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
         with open(filename, 'w', encoding='utf-8') as sys.stdout:
 
-            # Start the runtime and publish a message to the assistant.
-            runtime.start()
-            # await runtime.publish_message(
-            #     UserAssignment("""
-            #         Create a script called 'refactor.py' that is able to modify the 'stock_returns_plot.py' file. 
-                    
-            #         The "refactor.py' script should:
-            #             - Use the RedBaron library to interact with the python file.
-            #             - Replace hard coded values with variables.
-            #             - Refactor the code to use functions.
-
-            #         The stock_returns_plot.py file is in current folder and it is version controlled, we can revert to the original file if needed.
-                               
-            #         How to find local files on linux?
-            #         Where is the 'stock_returns_plot.py' file located?
-            #         How to use git to revert the local changes of a file?
-            #         Can we use RedBaron to:
-            #         - find and list the hard coded values in the file?
-            #         - replace the hard coded values with variables?
-            #         - refactor the code to use functions?
-            #         What is the purpose of the 'stock_returns_plot.py' file?
-            #         How to add command line arguments to 'stock_returns_plot.py'?
-                    
-            #         Where is the 'refactor.py' script located?
-            #         What is already done in the 'refactor.py' script?
-            #         How to use it to refactor the 'stock_returns_plot.py' file?
-                               
-            #                 """), 
-            #     DefaultTopicId()
-            # )
-
-#             await runtime.publish_message(
-#                 UserAssignment( \
-# """
-# Similar projects can be found at: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
-# Download the mentioned file and check the code for autogen imports.
-# Coder agent is able to use curl to download the file from the given URL.
-
-# Ensure the coder also uses the autogen library to implement the sceptic agent. Eg `grep -A 30 'import'` the code for autogen imports.
-# Give an example of how to use the sceptic agent and how to test it. 
-
-# Model client:                      
-# ```python
-# model_client=AzureOpenAIChatCompletionClient(
-#         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT_URL"),
-#         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-#         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-#         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-#         temperature=0.0,
-#     )            
-# ```
-
-# Register the agent as follows:
-# ```python
-# planer_agent = await ScepticAgent.register(
-#     runtime,
-#     "sceptic",
-#     lambda: ScepticAgent(
-#         description="A sceptic agent", 
-#         model_client=model_client,
-#     )
-# )
-# ```  
-
-# Create runtime as follows:
-# ```python
-# runtime = SingleThreadedAgentRuntime()
-# ```
-
-# Start the runtime and publish a message to the assistant as follows:
-# ```python
-# runtime.start()
-# await runtime.publish_message(
-#     UserAssignment("Please write a hello world program in python."), 
-#     DefaultTopicId() )
-# ```
-
-# Main contains the following code to start:
-# ```python
-# asyncio.run(main())
-# ```
-
-# """), 
-#                 DefaultTopicId()
-#             )
-#             await runtime.publish_message(
-#                 UserAssignment( \
-# """
-# Download the following script: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
-# Review the code and make a plan to refactor the code.
-
-# The following description is somewhat wage and needs some creativity to figure out how to finish it.
-
-# Complex task:
-# Output the top five lines (`head -n 5`) of the *.py, *.sh files to console to be aware of the folder content using bash script
-#     - Only keep the filename description and usage of important files/scripts.
-
-
-# Download the following script: ext_coding_url: https://github.com/Scherlac/autogen-experiments/blob/main/ext_coding.py
-
-# Complex task:
-# Create a python script that to extract agents and related imports and functions to a separate file.
-#     - Create a schema.json that contains source code information of related code sections.
-#     - Create a <name>_agent.py that contains the extracted agent code.
-#     - Create a <name>_agent.json that contains data related to the agent, like system messages. 
-#     - Use ast module to extract the class information and redbaron to refactor the code. 
-#     - Libraries are already installed in the environment.
-#     - Agent descriptions and 'system messages' text should be extracted to the json files and loaded from agent __init__.
-
-
-# Use the extract script to extract the following agents to separate files:
-# - 'planer agent' to planer_agent.py and planer_agent.json
-# - 'task handler agent' to task_handler_agent.py and task_handler_agent.json
-# - 'search agent' to search_agent.py and search_agent.json
-# - 'assistant agent' to assistant_agent.py and assistant_agent.json
-# - 'executor agent' to executor_agent.py and executor_agent.json
-
-
-# Extract single threaded agent runtime to agent_runtime.py from ext_coding.py
-
-# Before you create the extractor code, you need to understand the structure of the code and dependencies.
-
-# Complex tasks:
-# Do some experimentation the ast and redbaron libraries to understand how to extract the class information and refactor the code.
-# Create some tools to use the ast and redbaron libraries to extract the class information.
-# Analyze the code and dependencies to understand the structure of the code and dependencies.
-
-
-# The extracted code should contain the required imports.
-
-# The agent names might not be easy to spot in the code. It might camel case or snake case or misspelled.
-
-# Check the output of the `git status` command to see if the files are changed according to the task.
-
-
-
-# """), 
-#                 DefaultTopicId()
-#             )
-
-            await runtime.publish_message(
-                UserAssignment( \
+            task = \
 """
 
 # Summary of Previous Task:
@@ -1076,14 +955,12 @@ The task has been terminated as all objectives were met, and the findings were c
 
 [Language Server Extension Guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide)
 
-How to make connection to the language server using UNIX socket connections on local machine?
+Make a connection to the language server using UNIX socket connections on local machine.
 
-"""), 
-                DefaultTopicId()
-            )
+"""
+            from autogen_agentchat.ui import Console
+            result = await Console( m1.run_stream(task=task)) 
+            print(result, flush=True)
 
-            # # wait for 20 minutes for the agents to complete the tasks
-            # await asyncio.sleep(1200)
-            await runtime.stop_when_idle()
 
 asyncio.run(main())
